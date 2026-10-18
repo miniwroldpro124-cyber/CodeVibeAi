@@ -5,6 +5,7 @@ window.Auth = (() => {
   const state = {
     user: null,
     disabled: false,
+    apiError: '',
     markupPercent: 20,
     priceBookSize: 0,
     ready: false
@@ -61,18 +62,48 @@ window.Auth = (() => {
     try {
       res = await fetch(apiUrl(path), init);
     } catch (err) {
-      return { ok: false, status: 0, data: { error: `Cannot reach the server: ${err.message}` } };
+      // A CSP-blocked and a CORS-blocked request both surface as an opaque
+      // TypeError, so name the two things it could actually be.
+      return {
+        ok: false,
+        status: 0,
+        data: {
+          error: REMOTE
+            ? `Cannot reach ${API_ROOT}. Check that the backend is running and that its `
+              + `ALLOWED_ORIGINS lists ${location.origin}.`
+            : `Cannot reach the server: ${err.message}`
+        }
+      };
     }
+    const text = await res.text().catch(() => '');
     let data = null;
     try {
-      data = await res.json();
+      data = JSON.parse(text);
     } catch {
       data = null;
+    }
+    if (!res.ok && (!data || typeof data !== 'object' || !data.error)) {
+      data = { error: describeFailure(res, text, path) };
     }
     // The server only returns a token when it saw a cross-origin request; the
     // cookie path leaves it out and nothing here changes.
     if (data && data.token) writeToken(data.token);
     return { ok: res.ok, status: res.status, data: data || {} };
+  }
+
+  // A CDN, a missing serverless function or a rewrite that never reached the API
+  // all answer with an HTML page. Rendering that as "Request failed (404)" throws
+  // away the only diagnosis the user can act on.
+  function describeFailure(res, text, path) {
+    const type = res.headers.get('content-type') || '';
+    const html = /^\s*</.test(text) || type.includes('text/html');
+    const where = API_ROOT || location.origin;
+    if (html && (res.status === 404 || res.status === 405)) {
+      return `No DevChat server is answering at ${where}${path}. That address served an HTML page `
+        + 'instead of the API — set DEVCHAT_API in public/config.js to a running backend.';
+    }
+    if (html) return `The server replied ${res.status} with a page instead of JSON.`;
+    return `Request failed (${res.status})`;
   }
 
   function emit() {
@@ -92,6 +123,12 @@ window.Auth = (() => {
 
   async function refresh() {
     const res = await api('/api/me');
+    // /api/me answers 200 even when nobody is signed in. Only these three
+    // signatures mean "that address is not a DevChat API" — a 500 from a real API
+    // is a server fault, and labelling it as a missing server hides the cause.
+    state.apiError = [0, 404, 405].includes(res.status)
+      ? res.data.error || `Request failed (${res.status})`
+      : '';
     state.user = res.data.user || null;
     // A token the server no longer knows about would be replayed on every request
     // for as long as the tab stayed open.
@@ -162,6 +199,17 @@ window.Auth = (() => {
     </p>
   </div>
 
+  <div class="ov-pane" data-pane="offline" hidden>
+    <h1>No server behind this page</h1>
+    <p class="ov-sub" data-offline-detail></p>
+    <p class="ov-note">
+      This is only the interface. Accounts, encrypted keys and chat history live in the Node
+      server, which cannot run on a static host — it needs a machine with a disk. See
+      <b>Deploying it</b> in the README, then point <code>DEVCHAT_API</code> at it.
+    </p>
+    <button type="button" class="ov-submit" data-act="retry"><span data-submit-label>Try again</span></button>
+  </div>
+
   <div class="ov-pane" data-pane="disabled" hidden>
     <h1>Account disabled</h1>
     <p class="ov-sub">An administrator has disabled this account. Ask them to re-enable it.</p>
@@ -195,8 +243,9 @@ window.Auth = (() => {
     const el = ensureOverlay();
     for (const p of el.querySelectorAll('[data-pane]')) p.hidden = p.dataset.pane !== name;
     const foot = el.querySelector('.ov-foot');
-    // Sign-out is meaningless when there is no session.
-    foot.hidden = name === 'auth';
+    // Sign-out is meaningless without a session, and so is a pricing link when
+    // the page cannot reach the server that prices anything.
+    foot.hidden = name === 'auth' || name === 'offline';
     return el;
   }
 
@@ -262,6 +311,7 @@ window.Auth = (() => {
       }
       form.password.value = '';
       state.user = res.data.user;
+      state.apiError = '';
       state.disabled = false;
       state.markupPercent = Number(res.data.markupPercent) || state.markupPercent;
       hide();
@@ -300,6 +350,10 @@ window.Auth = (() => {
     el.addEventListener('click', (event) => {
       const trigger = event.target.closest('[data-act]');
       if (!trigger) return;
+      if (trigger.dataset.act === 'retry') {
+        boot().catch(() => {});
+        return;
+      }
       if (trigger.dataset.act === 'signout') signOut();
       if (trigger.dataset.act === 'key-later') {
         hide();
@@ -317,6 +371,7 @@ window.Auth = (() => {
     document.documentElement.classList.add('ov-open');
     const focusTarget = el.querySelector(`[data-pane="${nextPane}"]:not([hidden]) input`);
     if (focusTarget) setTimeout(() => focusTarget.focus(), 30);
+    return el;
   }
 
   function hide() {
@@ -338,6 +393,11 @@ window.Auth = (() => {
     show('disabled');
   }
 
+  function showOffline(message) {
+    const el = show('offline');
+    el.querySelector('[data-offline-detail]').textContent = message || '';
+  }
+
   async function signOut() {
     await api('/api/auth/logout', { method: 'POST' });
     writeToken('');
@@ -356,6 +416,10 @@ window.Auth = (() => {
   async function boot({ requireKey = false } = {}) {
     await refresh();
 
+    if (state.apiError && !state.user) {
+      showOffline(state.apiError);
+      return null;
+    }
     if (state.disabled) {
       showDisabled();
       return null;
