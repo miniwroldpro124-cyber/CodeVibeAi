@@ -594,6 +594,8 @@ it cannot be abused as an open relay to the rest of the upstream API.
 - **Dark and light themes** on all five pages, following your system preference until you override
   it. The choice is stored under one key, so the chat, the price list and the admin panel never
   disagree about which theme you picked.
+- **Look & feel** — a **Look** button beside the theme one on all five pages, for the background,
+  the ambient sound and the interface clicks. See [Look & feel](#look--feel).
 - **The interface** — a fixed sidebar with the model picker and history, a soft aurora and grid
   behind glass panels, a composer that grows with the text, starter prompt cards on an empty chat,
   and wide tables that scroll inside their own card instead of dragging the whole page sideways.
@@ -607,6 +609,34 @@ it cannot be abused as an open relay to the rest of the upstream API.
 | `Esc`                        | Stop generating / close panel |
 | `Ctrl`/`Cmd` + `K`           | Open the model picker         |
 | `Ctrl`/`Cmd` + `Shift` + `O` | New chat                      |
+
+## Look & feel
+
+`public/style.js` adds one panel to every page, opened by the **Look** button next to the theme
+button. It holds three groups, and nothing in it is a server setting: the choice is stored in the
+browser under `devchat.look.v1`, so another device stays on the defaults and the account list never
+sees any of it.
+
+- **Background** — *Aurora* (what the site ships with), *Grid*, *Plain*, or *Picture*: an `https`
+  address of your own plus a **Dim for reading** slider. The picture is fetched by your browser,
+  never by this server, so it costs the deployment nothing and needs no upload. The address is
+  checked before it is used: `https` only, and a character that could break out of the CSS
+  `url("…")` it ends up inside makes the whole value be refused. `theme.js` applies the choice
+  before the first paint, so a saved backdrop does not flash in as the aurora.
+- **Ambient sound** — *Drone*, *Rain*, *Keys*, or *Your file*, with a level slider.
+- **Interface sounds** — a tick on buttons, a short whoosh as a message goes out, a two-note chime
+  when an answer lands, a low pair of tones when the request fails. One checkbox turns all of them
+  off, and a level slider sets how loud.
+
+No audio file is shipped with the site. Every sound is synthesised in the browser with WebAudio,
+which is why there is nothing to licence, nothing to download, and no `media-src` exception to add to
+the Content-Security-Policy. *Your file* is the one exception: a track you pick is decoded and played
+locally for that visit, is never uploaded anywhere, and has to be chosen again after a reload — the
+page only remembers that you wanted it.
+
+Browsers refuse to let a page make sound before you have interacted with it, so an ambient bed starts
+on your first click or keypress rather than on load, and *Keys* stays quiet while the tab is in the
+background.
 
 ## Project layout
 
@@ -640,8 +670,9 @@ public/
   admin.html  admin.js
   auth.js              sign-in/sign-up overlay, the API-key gate and the session token
   page.js              helpers shared by the pages other than the chat
+  style.js             the look & feel panel: backdrop, ambient bed, synthesised interface cues
   config.js            which API origin this page talks to ('' = the server that sent it)
-  theme.js             sets the theme before first paint (no inline script allowed)
+  theme.js             sets the theme and the chosen backdrop before first paint (no inline script)
   watchdog.js          inspector and automation deterrent, reports to /api/guard/event
   styles.css
   zip.js               dependency-free ZIP writer (store method)

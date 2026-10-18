@@ -136,6 +136,47 @@ body::after {
   100% { transform: translate3d(-2%, 2%, 0) scale(1.03); }
 }
 
+/* ---------- look & feel backdrops ---------- */
+
+/* style.js writes html[data-bg] plus the two custom properties below from
+   devchat.look.v1; theme.js does the same before the first paint so a chosen
+   backdrop is already there when the page appears. No attribute, aurora. */
+
+html { --look-dim: 0%; --look-image: none; }
+
+html[data-bg="grid"] body::before {
+  background: var(--bg);
+  filter: none;
+  animation: none;
+}
+html[data-bg="grid"] body::after {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--text) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--text) 4.5%, transparent) 1px, transparent 1px);
+  mask-image: none;
+}
+
+html[data-bg="plain"] body::before {
+  background: var(--bg);
+  filter: none;
+  animation: none;
+}
+html[data-bg="plain"] body::after { background-image: none; }
+
+/* The dim is a scrim of the page's own background colour, so text keeps the
+   contrast it has on every other backdrop however bright the picture is. */
+html[data-bg="image"] body::before {
+  inset: 0;
+  filter: none;
+  animation: none;
+  background:
+    linear-gradient(color-mix(in srgb, var(--bg) var(--look-dim), transparent),
+                    color-mix(in srgb, var(--bg) var(--look-dim), transparent)),
+    var(--look-image) center / cover no-repeat,
+    var(--bg);
+}
+html[data-bg="image"] body::after { background-image: none; }
+
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: none; padding: 0; }
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
@@ -1496,3 +1537,81 @@ table.data td.wrap { white-space: normal; min-width: 300px; line-height: 1.5; co
   .kv dd { margin-bottom: 8px; }
   .tool-nav { width: auto; }
 }
+
+/* ---------- look & feel panel ---------- */
+
+/* style.js appends this to body on every page, so it is a fixed card rather than
+   a dropdown: the trigger sits in the sidebar on the chat page and in a top bar on
+   the standalone ones, and only one of those has room underneath it. */
+.lf {
+  position: fixed; z-index: 190; right: 18px; bottom: 18px;
+  width: min(330px, calc(100vw - 36px));
+  max-height: calc(100dvh - 36px);
+  overflow: auto;
+  display: grid; gap: 11px;
+  padding: 15px 16px 16px;
+  background: var(--panel-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
+  animation: lfIn .2s var(--ease-out);
+}
+@keyframes lfIn { from { opacity: 0; transform: translateY(10px) scale(.985); } }
+
+.lf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lf-head h2 { margin: 0; font-size: 14.5px; font-weight: 750; letter-spacing: -.015em; }
+
+.lf-legend {
+  margin: 4px 0 0; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+
+.lf-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.lf-opt {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 11px; border-radius: 999px;
+  border: 1px solid var(--border-soft); background: var(--bg-soft);
+  font-size: 12.5px; color: var(--text-soft); cursor: pointer;
+  transition: border-color .14s, color .14s, background .16s;
+}
+.lf-opt:hover { border-color: var(--muted); color: var(--text); }
+.lf-opt input { flex: none; width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
+.lf-opt:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-soft); color: var(--text);
+}
+.lf-toggle { border-radius: var(--radius-sm); }
+
+.lf-picture {
+  display: grid; gap: 10px;
+  padding: 11px; border: 1px dashed var(--border); border-radius: var(--radius-sm);
+}
+.lf-field, .lf-slider { display: grid; gap: 6px; }
+.lf-field > span, .lf-slider > span {
+  font-size: 10.5px; font-weight: 650; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted);
+}
+.lf-slider > span b { float: right; font-family: var(--mono); font-weight: 500; color: var(--text-soft); }
+.lf-field input {
+  padding: 8px 10px; background: var(--bg-soft); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  font-family: var(--mono); font-size: 12px; outline: none;
+  transition: border-color .16s var(--ease), box-shadow .16s;
+}
+.lf-field input:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.lf-slider input[type="range"] { width: 100%; height: 20px; cursor: pointer; accent-color: var(--accent); }
+
+.lf-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.lf-note:empty { display: none; }
+
+.lf-foot { display: flex; gap: 8px; padding-top: 2px; }
+.lf-foot .btn { flex: 1; justify-content: center; font-size: 12.5px; }
+
+/* Three labelled buttons do not fit the sidebar, and "Delete all" is the one that
+   would lose letters, so the trigger there is icon-only. aria-label carries the
+   name, and the top bar on the other pages keeps the word. */
+.foot-btns .look-trigger { flex: none; }
+.foot-btns .look-trigger span { display: none; }

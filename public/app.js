@@ -1082,6 +1082,10 @@
       state.controller = null;
       setStreaming(false);
       paint(true);
+      // Nobody is watching the screen when a long answer lands, so the sound is the
+      // point of this. A stop the visitor pressed themselves stays silent.
+      if (msg.error) window.Style?.play('error');
+      else if (msg.content && !msg.stopped) window.Style?.play('done');
       if (noteEl) {
         updateMeta(noteEl, msg);
       }
@@ -1138,6 +1142,7 @@
   }
 
   async function dispatch(text) {
+    window.Style?.play('send');
     const conv = ensureConv();
     const attachedNames = state.attachments.map((f) => f.name);
     const composed = composeWithAttachments(text);
