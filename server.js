@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Store, DATA_DIR } from './lib/db.js';
+import { Store } from './lib/db.js';
 import { bootstrapAdmin } from './lib/auth.js';
 import { createApi } from './lib/routes.js';
 import { sendText } from './lib/http.js';
@@ -38,8 +38,8 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8'
 };
 
-const store = new Store();
-bootstrapAdmin(store);
+const store = await Store.open();
+await bootstrapAdmin(store);
 const handleApi = createApi({
   store,
   env: { apiBase: API_BASE, defaultModel: DEFAULT_MODEL }
@@ -115,7 +115,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
   const urls = reachableUrls(HOST, PORT);
   console.log('');
   console.log('  DevChat');
@@ -123,9 +123,9 @@ server.listen(PORT, HOST, () => {
   for (const item of urls.lan) console.log(`   other devices   ${item.url}   (${item.name})`);
   console.log(`   admin panel     ${urls.local[0]}/admin.html`);
   console.log(`   upstream        ${API_BASE}`);
-  console.log(`   data            ${DATA_DIR}`);
+  console.log(`   database        ${store.location}`);
   console.log(`   billing         each user's own sk- key, encrypted at rest`);
-  console.log(`   markup          +${store.getMarkupPercent()}% on the ckey.vn list price`);
+  console.log(`   markup          +${await store.getMarkupPercent()}% on the ckey.vn list price`);
   if (HOST === '0.0.0.0') {
     console.log('');
     console.log('   Listening on every interface: anyone on this network can register and chat');

@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "host": "node scripts/host.mjs",
-    "admin": "node scripts/admin.mjs"
+    "admin": "node scripts/admin.mjs",
+    "migrate:turso": "node scripts/migrate-turso.mjs"
   },
   "engines": {
     "node": ">=24"

@@ -1,7 +1,8 @@
 /* Which API this page talks to. Edit DEVCHAT_API and nothing else.
 
-   ''  →  the server that delivered the page. That is `npm start` and `npm run host`,
-          and it keeps using the HttpOnly session cookie.
+   ''  →  the server that delivered the page. That is `npm start`, `npm run host`, and a
+          Vercel deploy where api/index.js answers /api on the same origin. This keeps
+          the HttpOnly session cookie.
 
    For the split deployment — this folder on Vercel, the API on another host — put the
    backend origin here. The same origin must also appear in that server's

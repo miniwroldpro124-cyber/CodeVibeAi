@@ -86,8 +86,11 @@ Settings live in `.env` (copy `.env.example` to start):
 | `ADMIN_REAUTH`          | `sensitive`               | Step-up password prompt: `sensitive`, `always`, or `off`.   |
 | `ADMIN_REAUTH_MINUTES`  | `10`                      | How long a sign-in or confirmation counts as recent (1–240).|
 | `MASTER_KEY`            | —                         | 32 bytes of base64 that decrypt stored keys. Empty means generate `data/master.key`. |
-| `ALLOWED_ORIGINS`       | —                         | Frontend origins allowed to call this API, comma-separated. Only for the split deployment below. |
-| `TRUST_PROXY`           | `0`                       | `1` reads the client address from `X-Forwarded-For`. Set it only behind a proxy you control. |
+| `TURSO_URL`             | —                         | Hosted database URL (`libsql://…`). Set it and the app uses that instead of `data/devchat.db` — and `MASTER_KEY` stops being optional. |
+| `TURSO_TOKEN`           | —                         | API token for that database. Required with `TURSO_URL`.        |
+| `TURSO_TIMEOUT_MS`      | `10000`                   | How long one database round trip may take.                     |
+| `ALLOWED_ORIGINS`       | —                         | Frontend origins allowed to call this API, comma-separated. Only for layout B below. |
+| `TRUST_PROXY`           | `0`                       | `1` reads the client address from `X-Forwarded-For`. Set it only behind a proxy you control. The Vercel function sets it for you. |
 
 `XAH_API_KEY` is **no longer used**. Keys belong to the accounts that use them; there is no shared
 server key. If yours is still sitting in `.env` from an earlier version, delete the line.
@@ -119,17 +122,81 @@ reason, and `--private` is always one flag away.
 
 ## Deploying it
 
-DevChat is one Node process with a SQLite file beside it. A frontend-only host cannot run it:
-there is nothing to execute and `data/` has nowhere to live. Vercel in particular gives a function
-a read-only filesystem that is wiped between cold starts, so `data/master.key` would be
-regenerated on the next request — which does not merely lose the accounts, it makes every stored
-`sk-` key permanently undecryptable.
+DevChat is a Node server with a database beside it, and a frontend-only host has nowhere to put
+either. Vercel gives a function a read-only filesystem that is wiped between cold starts, so
+`data/master.key` would be regenerated on the next request — which does not merely lose the
+accounts, it makes every stored `sk-` key permanently undecryptable. The function therefore refuses
+to serve at all without a hosted database, and says so in its response instead of quietly minting a
+new key.
 
-The split deployment keeps both halves: **`public/` on Vercel's CDN, the API on any host with a
-disk.** The browser then reaches the API directly, which also means a long streaming answer is
-never cut off by a serverless time limit.
+Two layouts work. Pick one:
 
-### 1. Put the API somewhere with a real volume
+| Layout                                                                   | Needs                     | Session travels as        |
+| ------------------------------------------------------------------------ | ------------------------- | ------------------------- |
+| **A. Everything on Vercel** — page and API on one origin, data on Turso    | a free Turso database     | an `HttpOnly` cookie      |
+| **B. Page on Vercel, API on a disk** — Docker, Railway, Fly.io or a VPS    | a host with a real volume | an `Authorization` header |
+
+### A. Everything on Vercel
+
+`vercel.json` already does the wiring: `public/` is served as static files, `api/index.js` is one
+Node function, and a rewrite sends every `/api/…` path to it. One origin means no CORS, no
+`localStorage` token, and no second service to keep alive.
+
+**1. Create a database.** [turso.tech](https://turso.tech) has a free plan (5 GiB storage, 500 M row
+reads and 10 M row writes a month — DevChat reads one session row per request). Choose the region
+nearest your users, then copy the database URL and create an API token.
+
+**2. Move the accounts over** — only if this machine already has a `data/devchat.db` worth keeping.
+Read the master key first, because the new host must decrypt with exactly that key:
+
+```bash
+npm run admin -- --print-master-key          # the key that unlocks every stored sk-
+npm run migrate:turso -- --dry-run           # shows what would be copied, writes nothing
+npm run migrate:turso                        # users, sessions, usage, settings, guards, audit
+```
+
+Put `TURSO_URL`, `TURSO_TOKEN` and `MASTER_KEY` in `.env` for the copy, or pass them inline. The
+script refuses a target that already has accounts, because merging two id sequences produces
+collisions; `--force` overrides that if you know why.
+
+**3. Set the environment in Vercel** — Project → Settings → Environment Variables (Production at
+minimum, Preview if you want both to work):
+
+```
+TURSO_URL=libsql://your-db-yourname.turso.io
+TURSO_TOKEN=eyJhbGciOi…
+MASTER_KEY=<the base64 printed by --print-master-key>
+ADMIN_USERNAME=admin
+DEFAULT_MODEL=deepseek-v4.1-flash
+```
+
+`ADMIN_PASSWORD` is optional; left empty the first cold start generates one and prints it to the
+function log, which is harder to read than a local console. Set it, sign in, then change it in
+Settings and remove the variable.
+
+**4. Push.** In the Vercel build log, check two lines: the Functions list must contain
+`api/index.js`, and the Routes list must contain a rewrite from `/api/:path*` to `/api/index`. If
+the function is missing, the deployment treated `public/` as the whole project — set Root Directory
+to the repository root (the output directory only says where static files live).
+
+`public/config.js` keeps `DEVCHAT_API = ''`: same origin, so nothing to point at. Sign in on the
+live URL and the "No server behind this page" pane should be gone.
+
+What the serverless shape changes underneath:
+
+- **Duration.** `maxDuration` is 300 s, enough for a long answer. A stream that is cut off still
+  records its usage, because the write is awaited before the function returns — a fire-and-forget
+  write would be frozen with the process and lost.
+- **The login limiter is per instance.** The in-memory fixed-window counter sees only what one warm
+  instance saw. The account lockout ladder is different: it lives in the database, so ten bad
+  passwords lock that account wherever they came from.
+- **One round trip per call.** Every request to a hosted database is an HTTPS call, so the hot
+  paths are written as one statement. Put the Vercel project region (Project → Settings → Region)
+  next to the Turso group, or each request pays for the crossing.
+- **Schema on cold start.** The function runs `CREATE TABLE IF NOT EXISTS` on every boot, so a
+  brand-new database needs nothing but the URL and the token.
+
+### B. Page on Vercel, API on a disk
 
 `Dockerfile` and `docker-compose.yml` are ready. The compose file mounts a named volume at `/data`,
 and that volume is the whole deployment story — a free tier that restarts the container with an
@@ -153,38 +220,30 @@ visitor is recorded as the proxy's own address, so one person's mistyped passwor
 the whole service in the login limiter. Set it only when a proxy you control is in front of the
 process — otherwise a client can pick its own IP and step around the limiter.
 
-### 2. Tell the page where the API is
-
-Two files have to agree on the same origin, and each is one line:
+Then two places have to agree on the same origin, one line each:
 
 | File                | Set                                                                        |
 | ------------------- | -------------------------------------------------------------------------- |
 | `public/config.js`  | `const DEVCHAT_API = 'https://api.your-domain.com'`                        |
-| `vercel.json`       | replace `https://__BACKEND_ORIGIN__` inside the CSP `connect-src` entry    |
+| `vercel.json`       | add that origin to the CSP `connect-src` entry, after `'self'`             |
 
-Leave `DEVCHAT_API` empty and the app uses the server that delivered the page — that is `npm start`
-and `npm run host`, and it needs neither of the two above. If you edit only one of them the
-browser blocks every request and the UI says `Cannot reach the server`; that is a CSP violation
-rather than a network failure, so read the browser console before debugging the backend.
-
-### 3. Import the repository on Vercel
-
-Framework preset **Other**. `vercel.json` supplies the output directory, the no-op build and the
-security headers. Do not add a rewrite from `/api/*` to the backend — proxying SSE through
-Vercel's edge reintroduces exactly the timeout this layout exists to avoid.
+If you edit only one of them the browser blocks every request and the UI says `Cannot reach the
+server`; that is a CSP violation rather than a network failure, so read the browser console before
+debugging the backend. Leave `DEVCHAT_API` empty and the app uses the server that delivered the page
+— that is `npm start`, `npm run host`, and layout A.
 
 ### How you stay signed in
 
-Same-origin (this machine, your LAN) keeps the `HttpOnly` session cookie as always: JavaScript
-cannot read it, so injected code cannot steal it. Across origins a cookie set by the API host is
-third-party storage, which Safari drops outright, so the login response returns the token in JSON
-instead and the page replays it as `Authorization: Bearer`. That token lives in `localStorage`
-where page script can reach it — the honest cost of the split is trading cookie theft for XSS
-theft, and the CSP that forbids inline script is what keeps that trade worth making. Never add
-`'unsafe-inline'` to `script-src` to silence a warning.
+Same-origin — this machine, your LAN, and layout A — keeps the `HttpOnly` session cookie as always:
+JavaScript cannot read it, so injected code cannot steal it. Across origins (layout B) a cookie set
+by the API host is third-party storage, which Safari drops outright, so the login response returns
+the token in JSON instead and the page replays it as `Authorization: Bearer`. That token lives in
+`localStorage` where page script can reach it — the honest cost of the split is trading cookie theft
+for XSS theft, and the CSP that forbids inline script is what keeps that trade worth making. Never
+add `'unsafe-inline'` to `script-src` to silence a warning.
 
-Because the credential is a header rather than an ambient cookie, no cross-site request can carry
-it by accident, so the CSRF defence becomes a plain origin allowlist.
+Because the credential is a header rather than an ambient cookie, no cross-site request can carry it
+by accident, so the CSRF defence becomes a plain origin allowlist.
 
 ### Before you push anything
 
@@ -309,9 +368,9 @@ Two details make a quote agree with the bill:
 
 Calling the API straight from the browser does not work here: the endpoint sends no CORS headers,
 and a static page would have to embed each secret key where anyone could read it. `server.js` sits
-in between, holds keys only in the encrypted database, and rebuilds every chat body from a
-whitelist of recognised parameters — so it cannot be abused as an open relay to the rest of the
-upstream API.
+in between — or `api/index.js`, the same routes packaged as one Vercel function — holds keys only in
+the encrypted database, and rebuilds every chat body from a whitelist of recognised parameters, so
+it cannot be abused as an open relay to the rest of the upstream API.
 
 ## Features
 
@@ -355,11 +414,14 @@ upstream API.
 
 ```
 server.js              boot, static file serving, ETag caching
+api/index.js           the same API as one Vercel function (needs TURSO_URL)
 lib/
-  db.js                SQLite schema and all queries (WAL, foreign keys ON)
+  db.js                schema and all queries, async over a pluggable driver
+  driver-local.js      file-backed SQLite: WAL, foreign keys ON, busy timeout
+  driver-turso.js      hosted libSQL over /v2/pipeline, no dependency
   auth.js              scrypt, sessions, key vault (AES-256-GCM), first-run admin
   guard.js             lockout ladder, password policy, step-up and audit rules
-  env.js               .env reader, shared by the server and both scripts
+  env.js               .env reader, shared by the server and the scripts
   net.js               LAN addresses for `npm run host`, firewall command
   http.js              JSON body reader with size limits, cookie and error helpers
   security.js          the Content-Security-Policy and the other response headers
@@ -368,8 +430,9 @@ lib/
   pricing.js           price book ingested from the provider, floor and markup maths
   upstream.js          proxy: body whitelist, SSE relay, usage tap
 scripts/
-  admin.mjs            npm run admin — inspect, reset, promote, unlock, markup
+  admin.mjs            npm run admin — inspect, reset, promote, unlock, markup, master key
   host.mjs             npm run host  — bind the LAN, print URLs, spawn the server
+  migrate-turso.mjs    npm run migrate:turso — copy data/devchat.db into a hosted database
 public/
   index.html  app.js   the chat
   pricing.html pricing.js
@@ -383,7 +446,7 @@ public/
   zip.js               dependency-free ZIP writer (store method)
   vendor/              marked, DOMPurify, highlight.js + theme (no CDN at runtime)
 data/                  devchat.db + master.key — git-ignored, delete to reset
-vercel.json            static hosting of public/ plus the page's security headers
+vercel.json            static public/, the /api rewrite, function duration, security headers
 Dockerfile             the API image; /data is a volume, nothing stateful in the layers
 docker-compose.yml     run the API with a named volume and ALLOWED_ORIGINS
 .dockerignore          keeps data/ and .env out of the image

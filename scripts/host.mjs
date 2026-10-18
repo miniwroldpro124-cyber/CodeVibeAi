@@ -133,16 +133,16 @@ async function ensureAdminPassword() {
   const { randomAdminPassword } = await lib('guard.js');
   if (!existsSync(DB_FILE)) return null;
 
-  const store = new Store();
+  const store = await Store.open();
   try {
     const username = String(process.env.ADMIN_USERNAME || 'admin').trim() || 'admin';
-    const existing = store.getUserByName(username);
+    const existing = await store.getUserByName(username);
     if (existing) return null;
     const password = randomAdminPassword(username);
     process.env.ADMIN_PASSWORD = password;
     return { username, password };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
