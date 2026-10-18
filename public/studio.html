@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Media studio — DevChat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M12 10l-6 6 6 6M20 10l6 6-6 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css?v=8">
+<script src="/theme.js"></script>
+<script src="/config.js"></script>
+<script src="/watchdog.js" data-mode="warn" defer></script>
+</head>
+<body>
+
+<div class="page">
+  <header class="page-head">
+    <a class="page-logo" href="/" aria-label="DevChat home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+    </a>
+    <h1>Media studio</h1>
+    <span class="spacer"></span>
+    <nav class="page-nav" aria-label="Sections">
+      <a href="/">Chat</a>
+      <a href="/studio.html" class="is-on" aria-current="page">Studio</a>
+      <a href="/coder.html">Coder setup</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/admin.html" id="adminLink" hidden>Admin</a>
+      <button type="button" id="themeBtn" title="Toggle theme">Theme</button>
+    </nav>
+  </header>
+
+  <div class="page-body">
+
+    <section class="card">
+      <h2 id="paneTitle">Make a picture</h2>
+      <p class="card-sub" id="paneSub">
+        Models are listed because the provider says they answer on the image endpoint — not because
+        the name looks right. Each picture is priced per request and billed to <b>your own</b> key.
+      </p>
+
+      <div class="sp-tabs" role="tablist" aria-label="What to generate">
+        <button type="button" class="sp-tab is-on" data-mode="image" role="tab" aria-selected="true">Picture</button>
+        <button type="button" class="sp-tab" data-mode="video" role="tab" aria-selected="false">Video</button>
+      </div>
+
+      <div class="field-grid" id="imageFields">
+        <label class="field">
+          <span>Model</span>
+          <select id="imageModel"></select>
+        </label>
+        <label class="field">
+          <span>Size</span>
+          <select id="imageSize">
+            <option value="1024x1024">1024 × 1024 square</option>
+            <option value="1536x1024">1536 × 1024 wide</option>
+            <option value="1024x1536">1024 × 1536 tall</option>
+            <option value="512x512">512 × 512</option>
+            <option value="">model default</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>How many</span>
+          <input type="number" id="imageCount" value="1" min="1" max="4" step="1" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span>Reference image URL (optional)</span>
+          <input type="url" id="imageUrl" placeholder="https://…/sketch.png" spellcheck="false" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="field-grid" id="videoFields" hidden>
+        <label class="field">
+          <span>Model</span>
+          <select id="videoModel"></select>
+        </label>
+        <label class="field">
+          <span>Resolution</span>
+          <select id="videoResolution">
+            <option value="480P">480P</option>
+            <option value="768P" selected>768P</option>
+            <option value="1080P">1080P</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Seconds (4–15)</span>
+          <input type="number" id="videoDuration" value="5" min="4" max="15" step="1" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span>Ratio</span>
+          <select id="videoRatio">
+            <option value="16:9">16 : 9</option>
+            <option value="9:16">9 : 16</option>
+            <option value="1:1">1 : 1</option>
+            <option value="4:3">4 : 3</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field studio-prompt">
+        <span>Prompt</span>
+        <textarea id="prompt" rows="4" spellcheck="false" placeholder="A red fox standing in fresh snow, low afternoon light, 35mm"></textarea>
+      </label>
+
+      <div class="btn-row studio-actions">
+        <button type="button" class="btn btn-primary" id="goBtn">Generate</button>
+        <button type="button" class="btn btn-ghost" id="cancelBtn" hidden>Cancel</button>
+        <span class="pill dim" id="priceChip">—</span>
+        <span class="pill dim" id="statusChip" hidden></span>
+      </div>
+
+      <p class="card-sub studio-note" id="videoNote" hidden>
+        A clip is a job, not an answer: the request only returns a task id, then this page asks for it
+        every few seconds until the file is ready. Keep the tab open — closing it does not cancel the job,
+        it only stops you watching it.
+      </p>
+
+      <div class="callout" id="errorBox" hidden></div>
+    </section>
+
+    <section class="card" id="resultsCard" hidden>
+      <h2>Results</h2>
+      <p class="card-sub" id="resultsSub"></p>
+      <div class="gallery" id="gallery"></div>
+      <div class="clip" id="clip"></div>
+    </section>
+
+  </div>
+</div>
+
+<script src="/auth.js?v=8"></script>
+<script src="/page.js?v=8"></script>
+<script src="/studio.js?v=8"></script>
+</body>
+</html>

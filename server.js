@@ -5,7 +5,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Store } from './lib/db.js';
-import { bootstrapAdmin } from './lib/auth.js';
+import { assertMasterKey, bootstrapAdmin } from './lib/auth.js';
 import { createApi } from './lib/routes.js';
 import { sendText } from './lib/http.js';
 import { applySecurityHeaders } from './lib/security.js';
@@ -38,6 +38,8 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8'
 };
 
+// Fail before the first request, not at the first saved sk- key.
+assertMasterKey();
 const store = await Store.open();
 await bootstrapAdmin(store);
 const handleApi = createApi({

@@ -71,5 +71,40 @@ window.Page = (() => {
     return `${Math.floor(secs / 86400)}d ago`;
   }
 
-  return { $, $$, esc, vnd, int, relTime, initTheme, initNav, prefs: readPrefs };
+  /* navigator.clipboard only exists on a secure origin, and the host script serves
+     the LAN over plain http, so the textarea path is what makes Copy work there. */
+  async function copy(text) {
+    try {
+      await navigator.clipboard.writeText(String(text));
+      return true;
+    } catch {
+      /* fall through to the legacy path */
+    }
+    const area = document.createElement('textarea');
+    area.value = String(text);
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.left = '0';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    area.remove();
+    return ok;
+  }
+
+  function flash(button, label) {
+    const original = button.textContent;
+    button.textContent = label;
+    button.classList.add('done');
+    clearTimeout(button._flash);
+    button._flash = setTimeout(() => {
+      button.textContent = original;
+      button.classList.remove('done');
+    }, 1400);
+  }
+
+  return { $, $$, esc, vnd, int, relTime, initTheme, initNav, copy, flash, prefs: readPrefs };
 })();

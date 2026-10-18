@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Coder setup — DevChat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M12 10l-6 6 6 6M20 10l6 6-6 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css?v=8">
+<script src="/theme.js"></script>
+<script src="/config.js"></script>
+<script src="/watchdog.js" data-mode="warn" defer></script>
+</head>
+<body>
+
+<div class="page">
+  <header class="page-head">
+    <a class="page-logo" href="/" aria-label="DevChat home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+    </a>
+    <h1>Coding tools setup</h1>
+    <span class="spacer"></span>
+    <nav class="page-nav" aria-label="Sections">
+      <a href="/">Chat</a>
+      <a href="/studio.html">Studio</a>
+      <a href="/coder.html" class="is-on" aria-current="page">Coder setup</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/admin.html" id="adminLink" hidden>Admin</a>
+      <button type="button" id="themeBtn" title="Toggle theme">Theme</button>
+    </nav>
+  </header>
+
+  <div class="page-body">
+
+    <section class="card">
+      <h2>Point your editor at the same gateway</h2>
+      <p class="card-sub" id="introSub">
+        DevChat is the browser client for this provider. Every tool below talks to the same account with
+        the same <b>sk-</b> key you saved in Settings. The base URL is filled in from this deployment; the
+        key is shown as a placeholder, because a saved key is stored encrypted and never sent back to the
+        browser — paste it once into each tool.
+      </p>
+      <div class="rule-grid" id="ruleGrid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Model used in the snippets</h2>
+      <p class="card-sub" id="modelSub">
+        Every card below writes this id into its config, so picking it here once is what keeps the
+        snippets coherent. The shortcuts are the models the provider's own guide recommends; the search
+        box takes any id from the live catalogue.
+      </p>
+      <div class="field-grid model-pick">
+        <label class="field">
+          <span>Model id</span>
+          <input type="search" id="modelPick" spellcheck="false" autocomplete="off" placeholder="type any model id from the price list">
+        </label>
+        <p class="model-price" id="modelPrice">—</p>
+      </div>
+      <div class="model-grid" id="modelGrid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Endpoints this gateway answers</h2>
+      <p class="card-sub">
+        One host, many contracts. “Used here” marks the routes DevChat itself calls; the rest are there for
+        your own scripts and are documented in the provider's setup guide.
+      </p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>What it does</th>
+              <th>Used here</th>
+            </tr>
+          </thead>
+          <tbody id="endpointRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="tool-nav" id="toolNav" aria-label="Tools"></div>
+
+    <div id="tools"></div>
+
+  </div>
+</div>
+
+<script src="/auth.js?v=8"></script>
+<script src="/page.js?v=8"></script>
+<script src="/coder.js?v=8"></script>
+</body>
+</html>

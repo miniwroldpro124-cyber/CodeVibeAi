@@ -6,7 +6,9 @@ button on every snippet, and a **Files** button that zips every file in an answe
 
 It is multi-user: each person signs up, pastes **their own** `sk-` key, and every request is signed
 with that key, so the operator never spends their own balance. Prices come from the provider's own
-model catalogue, and an admin panel shows real spend per user and per model.
+model catalogue, and an admin panel shows real spend per user and per model. The same key also drives
+a media studio (pictures and clips) and a setup page that hands you paste-ready config for the coding
+tools that read `ANTHROPIC_BASE_URL` or an OpenAI-compatible endpoint.
 
 ## Quick start
 
@@ -65,11 +67,34 @@ five seconds for a lock, then tells you to try again.
 | Page                 | Who sees it       | What it does                                                    |
 | -------------------- | ----------------- | --------------------------------------------------------------- |
 | `/`                  | signed-in users   | the chat                                                         |
+| `/studio.html`       | signed-in users   | image and video generation against the same account key          |
+| `/coder.html`        | signed-in users   | paste-ready setup for Cursor, Claude Code, Codex, Droid, OpenCode and OpenClaw |
 | `/pricing.html`      | signed-in users   | cost calculator and the full ckey.vn price list                  |
 | `/admin.html`        | admins only       | markup, users, spend per user/model, recent requests, and the protection card — locks, live sessions and the audit trail |
 
 A non-admin who opens `/admin.html` gets an "Admin only" card, and the API itself answers `403`
 regardless of what the page shows.
+
+## Studio and coder setup
+
+`/studio.html` generates pictures and clips with the signed-in account's own key. The picture list
+is built from the live catalogue: a model is offered only if `/v1/models` says it answers
+`/v1/images/generations` (13 of them do; one only answers edits, and one is a text-to-speech voice).
+Video models are not in the catalogue at all, so that list comes from `VIDEO_MODELS`.
+
+Generation is not free, and the page says what it costs before you press the button: the price chip
+under the prompt shows the provider's own per-picture rate and the same figure with the current
+markup. Results keep the base64 or CDN URL the provider returned — pictures inline, clips as a
+`no-referrer` link, because those CDN hosts are not a published allowlist and the CSP cannot name
+them in advance.
+
+`/coder.html` is the provider's setup page turned into copyable config for the tools people actually
+paste a key into. Every snippet is the published shape with three tokens replaced: `{V1}` becomes
+this deployment's `/v1` base URL, `{ROOT}` becomes the same URL without `/v1` (Claude Code wants the
+root, and leaving `/v1` in is how you get `/v1/v1/messages`), and `{MODEL}` becomes whichever model
+you pick from the chips or type into the box. The key stays a `sk-YOUR_API_KEY` placeholder, because
+a stored key is never sent back to the browser — and a model id that is not in the live price book
+says so instead of quoting a number for it.
 
 ## Configuration
 
@@ -91,6 +116,8 @@ Settings live in `.env` (copy `.env.example` to start):
 | `TURSO_TIMEOUT_MS`      | `10000`                   | How long one database round trip may take.                     |
 | `ALLOWED_ORIGINS`       | —                         | Frontend origins allowed to call this API, comma-separated. Only for layout B below. |
 | `TRUST_PROXY`           | `0`                       | `1` reads the client address from `X-Forwarded-For`. Set it only behind a proxy you control. The Vercel function sets it for you. |
+| `VIDEO_MODELS`          | `MiniMax-H3,MiniMax-H3-Max` | The studio's video list. Comma-separated model ids; needed because `/v1/models` does not contain any video model. |
+| `DEVCHAT_LOCAL_DB`      | —                         | `1` ignores `TURSO_*` and uses the local file database even when this `.env` has a live URL. See "Testing without touching live data". |
 
 `XAH_API_KEY` is **no longer used**. Keys belong to the accounts that use them; there is no shared
 server key. If yours is still sitting in `.env` from an earlier version, delete the line.
@@ -119,6 +146,43 @@ both, and a `169.254.*` address means that adapter has no network. Anyone on the
 can reach the sign-up page, so treat a shared instance like an open registration: it is fine at
 home, not fine on a café VLAN. `HOST=0.0.0.0` keeps the loud warning in the log for exactly this
 reason, and `--private` is always one flag away.
+
+## Testing without touching live data
+
+`.env` on this machine holds the **live** `TURSO_URL`, `TURSO_TOKEN` and `MASTER_KEY`, and
+`lib/env.js` lets any variable the command line left unset fall through to that file. So
+`DATA_DIR=C:\tmp\scratch node server.js` is not a scratch run: the log still says `hosted`, and every
+write lands on the real accounts. Override the database with a switch the code honours, not a path:
+
+```bash
+npm run test:ui
+```
+
+That starts an isolated instance on `http://127.0.0.1:5199` — `DEVCHAT_LOCAL_DB=1`, a fresh temp
+`DATA_DIR`, a throwaway `MASTER_KEY`, the fake provider from `.smoketest/fake-upstream.mjs`, and an
+`admin` / `UiScratch2026xy` login it prints with the scratch folder path. It refuses to boot at all
+if a hosted database is still reachable, because reaching that branch means the switch broke. Sign
+in there and try the chat, the studio and the coder page; the real `data/` folder and Turso database
+are never opened.
+
+`DEVCHAT_LOCAL_DB` is for that one command. Do not put it in `.env` — it would make `npm start`
+ignore the hosted database and grow a second, divergent copy of the accounts on disk.
+
+The suites run against the same stand-ins and never need a real key:
+
+```bash
+NODE_TLS_REJECT_UNAUTHORIZED=0 node .smoketest/driver-unit.mjs    # one driver contract, both drivers
+NODE_TLS_REJECT_UNAUTHORIZED=0 node .smoketest/hosted-run.mjs     # the Vercel function end to end
+node .smoketest/boot-guard.mjs                                   # a function with no database refuses
+node .smoketest/migrate-run.mjs                                  # the copy into a hosted database
+```
+
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is there because the fake provider answers over HTTPS with a
+self-signed certificate; it is a property of the harness, not of the app. `hosted-run.mjs` also
+checks the frontend against the pages on disk — every asset a page links to exists, every `#id` a
+page script reads is in its html, every `window.Page` helper it destructures is exported, and both
+new pages are in the folder that gets uploaded. Those four checks are what a browser shows as a blank
+pane and a deploy log does not.
 
 ## Deploying it
 
@@ -357,6 +421,14 @@ That means:
 - nothing the page loads can talk to another origin, so stolen session data has nowhere to go;
 - the site cannot be framed, which kills the clickjacking route into the key settings panel.
 
+Two origins are opened, and only for display: `img-src 'self' data: https:` and `media-src https:`.
+A generated picture arrives as `data:` and a generated clip is served from whichever CDN the provider
+happens to use for that model — those hosts are not published anywhere, so naming them is not
+possible, and the alternative is to route every byte through the function and pay the transfer twice.
+The carve-out is display-only: `connect-src` stays `'self'`, so nothing in a media URL can be fetched,
+posted to, or turned into a request; clips and picture links also carry `rel="noopener"` and
+`referrerpolicy="no-referrer"`, so the CDN is not told who was looking.
+
 Because inline script is forbidden, the theme bootstrap that used to sit in each page's `<head>` is
 now [public/theme.js](public/theme.js), and the admin sparkline sets bar heights through the CSSOM
 instead of a `style` attribute.
@@ -378,7 +450,7 @@ Three knobs:
 | get out of your own way       | `localStorage.setItem('devchat.guard', 'off')` in the console, or delete that key to turn it back on |
 | change what counts as secret  | add or remove `data-guard="secret"` on the elements to blur |
 
-`warn` is the default on all three pages. Detection is deliberately quiet: one report per kind per
+`warn` is the default on all five pages. Detection is deliberately quiet: one report per kind per
 minute on the client, and the same again on the server, so the audit list cannot be flooded.
 
 ## Pricing
@@ -419,6 +491,14 @@ it cannot be abused as an open relay to the rest of the upstream API.
   prompt may or may not produce a trace, so the chip omits it when the model did not think.
 - **Real cost per reply** — token counts and the provider's actual charge (`usage.x_ckey.cost`, ₫).
 - **500+ models** in a searchable picker, plus a filterable, sortable price list on the pricing page.
+- **Media studio** — pictures and clips generated with the account's own key, listed only for models
+  the provider's catalogue says can answer the endpoint, with the price shown before you press
+  Generate. A clip is a job rather than a request: the proxy takes the task id back from the provider
+  and the page polls it until a file appears, so a long render does not have to hold one request open.
+- **Coder setup** — the provider's integration guide turned into copyable config for Cursor,
+  Claude Code, VS Code, Codex, Droid, OpenCode and OpenClaw, with this deployment's base URL already
+  filled in (root for Claude Code, `/v1` for everything OpenAI-shaped) and the key left as a
+  placeholder, since a stored key never comes back to the browser.
 - **Chat history** in `localStorage`, grouped by day, searchable, and namespaced per user account.
 - **File attachments** — attach source files, or paste more than 3000 characters, and the text is
   sent as a fenced block with its filename. An attachment alone is a complete message: with the box
@@ -426,7 +506,7 @@ it cannot be abused as an open relay to the rest of the upstream API.
   a sign-in or key prompt that interrupts the send.
 - Markdown tables, task lists, inline code, links opened safely with `rel="noopener"`, and all model
   output passed through DOMPurify before it reaches the DOM.
-- **Dark and light themes** on all three pages, following your system preference until you override
+- **Dark and light themes** on all five pages, following your system preference until you override
   it. The choice is stored under one key, so the chat, the price list and the admin panel never
   disagree about which theme you picked.
 - **The interface** — a fixed sidebar with the model picker and history, a soft aurora and grid
@@ -468,10 +548,12 @@ scripts/
   migrate-turso.mjs    npm run migrate:turso — copy data/devchat.db into a hosted database
 public/
   index.html  app.js   the chat
+  studio.html studio.js
+  coder.html  coder.js
   pricing.html pricing.js
   admin.html  admin.js
   auth.js              sign-in/sign-up overlay, the API-key gate and the session token
-  page.js              helpers shared by the pricing and admin pages
+  page.js              helpers shared by the pages other than the chat
   config.js            which API origin this page talks to ('' = the server that sent it)
   theme.js             sets the theme before first paint (no inline script allowed)
   watchdog.js          inspector and automation deterrent, reports to /api/guard/event
@@ -483,12 +565,16 @@ vercel.json            static public/, the /api rewrite, function duration, secu
 Dockerfile             the API image; /data is a volume, nothing stateful in the layers
 docker-compose.yml     run the API with a named volume and ALLOWED_ORIGINS
 .dockerignore          keeps data/ and .env out of the image
+.smoketest/            throwaway provider and database stand-ins, and the suites that use them
 ```
 
 ## Notes
 
 - `data/` and `.env` are git-ignored. `data/master.key` decrypts every stored user key; losing it
-  means every user pastes their key again, leaking it means pasting it anywhere is unsafe.
+  means every user pastes their key again, leaking it means pasting it anywhere is unsafe. Once
+  `TURSO_URL` is set, the accounts are not in `data/` at all — so clearing that folder does not reset
+  a deployed site, and nothing on it should be cleared without meaning to. Use `npm run test:ui` for
+  a scratch instance instead.
 - POSTs are defended by a JSON-only content type, an Origin check (same-origin, or the
   `ALLOWED_ORIGINS` list once split) and, for cookie sessions, `SameSite=Lax`; an oversized body
   is refused with `413` before it is buffered. A bearer-token session needs none of that, because

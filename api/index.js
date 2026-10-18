@@ -52,8 +52,11 @@ async function start() {
     );
   }
   const { Store } = await import('../lib/db.js');
-  const { bootstrapAdmin } = await import('../lib/auth.js');
+  const { assertMasterKey, bootstrapAdmin } = await import('../lib/auth.js');
   const { createApi } = await import('../lib/routes.js');
+  // Before connecting: a deployment with the database but no MASTER_KEY has to say
+  // so in its own words here, rather than masking it as a 500 on the first key save.
+  assertMasterKey();
   const store = await Store.open();
   await bootstrapAdmin(store);
   return createApi({ store, env: { apiBase: API_BASE, defaultModel: DEFAULT_MODEL } });
