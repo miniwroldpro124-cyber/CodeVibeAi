@@ -1,0 +1,15 @@
+{
+  "name": "xah-devchat",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Streaming AI chat UI for coders, backed by the xah.io OpenAI-compatible API.",
+  "scripts": {
+    "start": "node server.js",
+    "host": "node scripts/host.mjs",
+    "admin": "node scripts/admin.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Admin — DevChat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M12 10l-6 6 6 6M20 10l6 6-6 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css?v=3">
+<script src="/theme.js"></script>
+<script src="/watchdog.js" data-mode="warn" defer></script>
+</head>
+<body>
+
+<div class="page">
+  <header class="page-head">
+    <a class="page-logo" href="/" aria-label="DevChat home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+    </a>
+    <h1>Admin</h1>
+    <span class="spacer"></span>
+    <nav class="page-nav" aria-label="Sections">
+      <a href="/">Chat</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/admin.html" class="is-on" aria-current="page">Admin</a>
+      <button type="button" id="themeBtn" title="Toggle theme">Theme</button>
+    </nav>
+  </header>
+
+  <div class="page-body">
+
+    <section class="card">
+      <h2>Markup</h2>
+      <p class="card-sub">
+        Applied to every cost DevChat reports, on top of the ckey.vn list price. It changes what the
+        dashboard and the calculator show — it never changes what the provider charges a user's own key.
+      </p>
+      <div class="field-grid">
+        <label class="field">
+          <span>Markup <b id="markupVal">20</b>%</span>
+          <input type="range" id="markup" min="0" max="200" step="5" value="20">
+        </label>
+        <label class="field">
+          <span>Exact percent</span>
+          <input type="number" id="markupNum" min="0" max="1000" step="0.5" value="20">
+        </label>
+        <div class="field">
+          <span>&nbsp;</span>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="markupSave">Apply</button>
+            <button type="button" class="btn btn-ghost" id="markupReset">Reload</button>
+          </div>
+        </div>
+      </div>
+      <p class="callout" id="markupMsg" hidden></p>
+    </section>
+
+    <section class="card">
+      <h2>Administrator protection</h2>
+      <p class="card-sub">
+        Sign-in locks are stored in the database, so they survive a restart. Administrators lock after
+        fewer wrong tries than normal users, sign-in sessions last shorter, and changing an account or a
+        role asks for the admin password again. Nothing here locks you out for good:
+        <code>npm run admin -- --unlock &lt;name&gt;</code> clears any lock, and
+        <code>npm run admin -- --reset &lt;name&gt;</code> sets a new password.
+      </p>
+      <div class="stat-grid" id="secStats"></div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Role</th>
+              <th class="num">Failed sign-ins</th>
+              <th>Lock</th>
+              <th>Last attempt</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="guardRows"></tbody>
+        </table>
+      </div>
+      <p class="card-sub">
+        <b>Recent sign-in and admin activity.</b> The newest 60 events, kept in the same database.
+      </p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Account</th>
+              <th>Event</th>
+              <th>From</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="eventRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Usage &amp; spend</h2>
+      <p class="card-sub">
+        <span id="rangeLabel">Last 30 days</span>. “Actual” is what the provider charged users' keys;
+        “billed” is that plus the markup.
+      </p>
+      <div class="filter-bar">
+        <button type="button" class="mini-btn" data-days="1">24h</button>
+        <button type="button" class="mini-btn" data-days="7">7d</button>
+        <button type="button" class="mini-btn" data-days="30">30d</button>
+        <button type="button" class="mini-btn" data-days="90">90d</button>
+        <span class="spacer"></span>
+        <button type="button" class="mini-btn" id="refreshBtn">Refresh</button>
+      </div>
+      <div class="stat-grid" id="stats"></div>
+      <div class="spark" id="spark" aria-hidden="true"></div>
+      <div class="spark-labels" id="sparkLabels"></div>
+    </section>
+
+    <section class="card">
+      <h2>Users</h2>
+      <p class="card-sub">Disable blocks sign-in immediately. Deleting also removes their usage rows and their stored key.</p>
+      <div class="filter-bar">
+        <input type="search" id="userQ" placeholder="Filter users" autocomplete="off" spellcheck="false">
+        <span class="pill dim" id="userCount">0 users</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>API key</th>
+              <th class="num">Requests</th>
+              <th class="num">Tokens</th>
+              <th class="num">Actual</th>
+              <th class="num">Billed</th>
+              <th>Last seen</th>
+              <th>Sessions</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Spend by user</h2>
+      <p class="card-sub">Ordered by billed cost over the selected range.</p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th class="num">Requests</th>
+              <th class="num">Failed</th>
+              <th class="num">In tokens</th>
+              <th class="num">Out tokens</th>
+              <th class="num">Actual</th>
+              <th class="num">Billed</th>
+            </tr>
+          </thead>
+          <tbody id="byUserRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Spend by model</h2>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Requests</th>
+              <th class="num">In tokens</th>
+              <th class="num">Out tokens</th>
+              <th class="num">Actual</th>
+              <th class="num">Billed</th>
+            </tr>
+          </thead>
+          <tbody id="byModelRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Recent requests</h2>
+      <p class="card-sub">The last 40, newest first. The billed figure here is the markup that was in
+        force when each request ran, not today's rate.</p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>User</th>
+              <th>Model</th>
+              <th class="num">Tokens</th>
+              <th class="num">Actual</th>
+              <th class="num">Billed (then)</th>
+              <th class="num">Estimate</th>
+              <th class="num">Time</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="recentRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="/auth.js?v=3"></script>
+<script src="/page.js?v=3"></script>
+<script src="/admin.js?v=3"></script>
+</body>
+</html>

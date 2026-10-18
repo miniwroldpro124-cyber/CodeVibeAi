@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>DevChat — AI pair programmer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M12 10l-6 6 6 6M20 10l6 6-6 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/vendor/atom-one-dark.min.css">
+<link rel="stylesheet" href="/styles.css?v=3">
+<script src="/theme.js"></script>
+<script src="/watchdog.js" data-mode="warn" defer></script>
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <a class="brand" href="/" aria-label="DevChat home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg>
+      </span>
+      <span class="brand-text">
+        <b>Dev<i>Chat</i></b>
+        <span>your key, your credits</span>
+      </span>
+      <span class="brand-ver">v2</span>
+    </a>
+
+    <div class="sidebar-head">
+      <button class="btn btn-primary new-chat" id="newChatBtn" title="New chat (Ctrl+Shift+O)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New chat</span>
+      </button>
+      <button class="icon-btn sidebar-close" id="closeSidebarBtn" aria-label="Close sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="sidebar-search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input type="search" id="convSearchInput" placeholder="Search chats" autocomplete="off" spellcheck="false">
+    </div>
+
+    <nav class="conv-list" id="convList" aria-label="Chat history"></nav>
+
+    <div class="sidebar-foot">
+      <div class="acct" id="acctRow">
+        <button class="acct-btn" id="acctBtn" aria-haspopup="menu" aria-expanded="false">
+          <span class="acct-avatar" id="acctAvatar" aria-hidden="true">?</span>
+          <span class="acct-name" id="acctName">Not signed in</span>
+          <span class="badge" id="acctRole" hidden>admin</span>
+          <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="acct-menu" id="acctMenu" role="menu" hidden>
+          <button class="acct-item" data-acct="key" role="menuitem">
+            <span>API key</span><b class="acct-hint" id="acctKeyHint" data-guard="secret">not set</b>
+          </button>
+          <button class="acct-item" data-acct="password" role="menuitem"><span>Change password</span></button>
+          <a class="acct-item" href="/pricing.html" role="menuitem"><span>Pricing calculator</span></a>
+          <a class="acct-item" href="/admin.html" id="adminLink" role="menuitem" hidden><span>Admin panel</span></a>
+          <button class="acct-item danger" data-acct="signout" role="menuitem"><span>Sign out</span></button>
+        </div>
+      </div>
+      <div class="foot-btns">
+        <button class="btn btn-ghost" id="themeBtn">
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.4M12 19.6V22M2 12h2.4M19.6 12H22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7"/></svg>
+          <span id="themeLabel">Dark</span>
+        </button>
+        <button class="btn btn-ghost danger" id="clearAllBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+          <span>Delete all</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menuBtn" aria-label="Open sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+
+      <div class="picker" id="modelPicker">
+        <button class="model-btn" id="modelBtn" aria-haspopup="listbox" aria-expanded="false">
+          <span class="model-dot" aria-hidden="true"></span>
+          <span class="model-name" id="modelName">loading models…</span>
+          <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="picker-panel" id="modelPanel" role="listbox" aria-label="Choose a model" hidden>
+          <div class="picker-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input type="search" id="modelSearchInput" placeholder="Search 500+ models (claude, gpt, deepseek…)" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="picker-filters" id="modelFilters"></div>
+          <div class="picker-list" id="modelList"></div>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <span class="cost-chip" id="costChip" title="Estimated spend for this conversation">0 ₫</span>
+        <button class="icon-btn" id="settingsBtn" aria-label="Generation settings" title="Generation settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="settings-panel" id="settingsPanel" hidden>
+      <div class="sp-tabs" role="tablist">
+        <button type="button" class="sp-tab is-on" data-sp="gen" role="tab">Generation</button>
+        <button type="button" class="sp-tab" data-sp="account" role="tab">Account &amp; key</button>
+      </div>
+
+      <div class="sp-pane" data-sp="gen">
+        <label class="setting">
+          <span>System prompt</span>
+          <textarea id="systemPrompt" rows="3" spellcheck="false" placeholder="Optional instructions applied to every chat"></textarea>
+        </label>
+        <div class="setting-row">
+          <label class="setting">
+            <span>Temperature <b id="tempVal">0.7</b></span>
+            <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
+          </label>
+          <label class="setting">
+            <span>Max tokens</span>
+            <input type="number" id="maxTokens" min="0" step="256" placeholder="model default">
+          </label>
+        </div>
+      </div>
+
+      <div class="sp-pane" data-sp="account" hidden>
+        <div class="setting">
+          <span>API key <b id="keyHint" data-guard="secret">not set</b></span>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="keyEditBtn">Add key</button>
+            <button type="button" class="btn btn-ghost danger" id="keyRemoveBtn" hidden>Remove</button>
+          </div>
+          <p class="sp-note">
+            Every request is signed with your own key and billed to you by the provider.
+            It is stored encrypted on this server and never sent back to the browser.
+          </p>
+        </div>
+        <div class="setting">
+          <span>Password</span>
+          <form class="pw-form" id="pwForm">
+            <input type="password" id="pwCurrent" placeholder="Current password" autocomplete="current-password">
+            <input type="password" id="pwNew" placeholder="New password (8+ chars)" autocomplete="new-password">
+            <button type="submit" class="btn btn-primary">Update</button>
+          </form>
+          <p class="sp-note" id="pwMsg" hidden></p>
+        </div>
+        <div class="setting">
+          <span>Session</span>
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost danger" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="messages" id="messages" tabindex="-1">
+      <div class="empty" id="emptyState">
+        <div class="empty-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+        </div>
+        <h1>DevChat</h1>
+        <p>Streaming AI for code. Every snippet ships with a copy button.</p>
+        <div class="suggestions" id="suggestions"></div>
+      </div>
+    </div>
+
+    <footer class="composer-wrap">
+      <div class="composer" id="composer">
+        <textarea id="promptInput" rows="1" placeholder="Ask anything, paste an error, or attach a file and send it alone…" spellcheck="false"></textarea>
+        <div class="composer-actions">
+          <span class="char-count" id="charCount" hidden></span>
+          <button class="icon-btn" id="attachBtn" title="Attach files — an attachment alone is enough to send" aria-label="Attach a code file">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.4 8.4a2 2 0 01-3-3L14 7"/></svg>
+          </button>
+          <input type="file" id="fileInput" accept=".js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.cs,.rb,.php,.sh,.bash,.zsh,.ps1,.sql,.html,.css,.scss,.vue,.svelte,.json,.yaml,.yml,.toml,.ini,.env,.md,.txt,.log,.xml,.csv,.kt,.kts,.swift,.dart,.scala,.lua,.pl,.r,.m,.gradle,.make,.mk,.dockerfile,Dockerfile" multiple hidden>
+          <button class="send-btn" id="sendBtn" title="Send (Enter)" aria-label="Send">
+            <svg class="i-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+          <button class="send-btn stop" id="stopBtn" title="Stop (Esc)" aria-label="Stop generating" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="composer-foot">
+        <span class="hint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · <kbd>Esc</kbd> stop</span>
+        <span class="hint" id="statusText"></span>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/auth.js?v=3"></script>
+<script src="/zip.js?v=3"></script>
+<script src="/app.js?v=3"></script>
+</body>
+</html>
