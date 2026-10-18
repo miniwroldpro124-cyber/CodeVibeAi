@@ -99,8 +99,9 @@
     },
     edit: {
       title: 'Edit a picture you already have',
-      sub: 'Choose a file, say what to change, and the model gets the picture and your words together.'
-        + ' This runs on the models the provider says can <b>see</b> an image and draw a new one —'
+      sub: 'Choose a file or paste one (Ctrl+V), say what to change, and the model gets the picture and'
+        + ' your words together. This runs on the models the provider says can <b>see</b> an image and'
+        + ' draw a new one —'
         + ' the <code>images/edits</code> endpoint exists in its price list but refuses every request'
         + ' this server has sent it, so it is not used.',
       button: 'Check the price',
@@ -300,35 +301,50 @@
 
   /* --------------------------------------------------------------- picture input */
 
-  // Drawing onto a canvas is what makes the send size the browser's choice rather
-  // than the file's. The result is always JPEG: a photo edit does not need alpha,
-  // and the transparency that PNG keeps costs several times the bytes.
+  /* Drawing onto a canvas is what makes the send size the browser's choice rather
+     than the file's. The result is always JPEG: a photo edit does not need alpha,
+     and the transparency that PNG keeps costs several times the bytes.
+
+     The file is read as a data: url rather than a blob: one. img-src allows data: and
+     not blob:, and a CSP-blocked image fires no error event at all, so the blob
+     version left this promise unsettled forever and the picture never appeared. */
   function resizeToDataUrl(file) {
     return new Promise((done, fail) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        const scale = Math.min(1, EDIT_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        try {
-          done({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height });
-        } catch (err) {
-          fail(new Error(`This browser could not re-encode that picture: ${err.message}`));
-        }
+      const reader = new FileReader();
+      reader.onerror = () => fail(reader.error || new Error('That file could not be read.'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => fail(new Error('That file is not a picture this browser can read.'));
+        img.onload = () => {
+          const scale = Math.min(1, EDIT_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          try {
+            done({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height });
+          } catch (err) {
+            fail(new Error(`This browser could not re-encode that picture: ${err.message}`));
+          }
+        };
+        img.src = String(reader.result);
       };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        fail(new Error('That file is not a picture this browser can read.'));
-      };
-      img.src = url;
+      reader.readAsDataURL(file);
     });
+  }
+
+  // A screenshot or a copied picture has no filename worth showing, and Chrome calls
+  // one "image.png" while Safari calls one "blob" — neither is what the visitor did.
+  function clipboardImage(clipboard) {
+    const items = clipboard && clipboard.items ? [...clipboard.items] : [];
+    const hit = items.find((item) => item.kind === 'file' && /^image\//.test(item.type));
+    if (hit) return hit.getAsFile();
+    // Safari leaves the file on `files` and puts nothing usable on `items`.
+    return [...(clipboard && clipboard.files ? clipboard.files : [])]
+      .find((file) => /^image\//.test(file.type)) || null;
   }
 
   function showPreview() {
@@ -360,9 +376,10 @@
         showError('Even resized, that file is too large to send. Crop it down and try again.');
         return;
       }
+      const name = file.name && file.name !== 'blob' ? file.name : 'Pasted picture';
       state.picture = {
         dataUrl,
-        label: `${file.name} · ${width} × ${height} · about ${Math.round(dataUrl.length * 0.75 / 1024)} KB sent`
+        label: `${name} · ${width} × ${height} · about ${Math.round(dataUrl.length * 0.75 / 1024)} KB sent`
       };
       hideConfirm();
       showPreview();
@@ -787,6 +804,15 @@
       showStatus('');
     });
     els.editFile.addEventListener('change', () => choosePicture(els.editFile.files[0]));
+    // Pasting is how a picture actually moves around a desktop, so a screenshot that
+    // is already on the clipboard should not have to be saved to a file first. The
+    // prompt is a plain textarea, so text still pastes into it as normal — taking the
+    // image alongside costs nothing, and that is what a copied picture needs.
+    document.addEventListener('paste', (event) => {
+      if (state.mode !== 'edit') return;
+      const file = clipboardImage(event.clipboardData);
+      if (file) choosePicture(file);
+    });
     selectFor('image').addEventListener('change', () => { updatePrice(); hideConfirm(); });
     selectFor('edit').addEventListener('change', () => { updatePrice(); hideConfirm(); });
     selectFor('voice').addEventListener('change', updatePrice);

@@ -1,4 +1,5 @@
-/* Look & feel — the backdrop, the ambient bed, and the little click sounds.
+/* Look & feel — the backdrop, the ambient bed, the little click sounds, and the snow
+   a click throws.
 
    Its settings live under their own localStorage key on purpose: app.js keeps a copy
    of devchat.prefs.v1 in memory and writes the whole object back, so a value added in
@@ -31,7 +32,8 @@ window.Style = (() => {
   const DEFAULTS = {
     bg: 'aurora', image: '', file: '', dim: 0,
     ambient: 'none', ambientVol: 25,
-    cue: true, cueVol: 45
+    cue: true, cueVol: 45,
+    snow: false, snowDensity: 55
   };
 
   const MARK = `<svg viewBox="0 0 24 24" aria-hidden="true">
@@ -78,7 +80,9 @@ window.Style = (() => {
       ambient: BEDS.some(([id]) => id === raw.ambient) ? raw.ambient : DEFAULTS.ambient,
       ambientVol: clamp(raw.ambientVol, 0, 100, DEFAULTS.ambientVol),
       cue: raw.cue !== false,
-      cueVol: clamp(raw.cueVol, 0, 100, DEFAULTS.cueVol)
+      cueVol: clamp(raw.cueVol, 0, 100, DEFAULTS.cueVol),
+      snow: raw.snow === true,
+      snowDensity: clamp(raw.snowDensity, 10, 100, DEFAULTS.snowDensity)
     };
   }
 
@@ -452,6 +456,209 @@ window.Style = (() => {
     }
   }
 
+  /* ------------------------------------------------------- snow under the cursor */
+
+  // One click throws a ring of flakes and gravity takes each of them over a moment
+  // later — that handover is what reads as a shatter rather than a circle of dots.
+  // Dragging sheds flakes along the path the pointer came by.
+  //
+  // A flake is drawn once into a sprite and blitted after that. Six arms with branch
+  // ticks is eighteen sub-paths, and re-stroking that for every live flake on every
+  // frame is the difference between a treat and a laptop fan.
+
+  const FLAKE_EDGE = 72;
+  const FLAKE_LIMIT = 140;
+  const flakes = [];
+  let layer = null;
+  let paint = null;
+  let sprites = null;
+  let spriteKey = '';
+  let raf = 0;
+  let lastFrame = 0;
+  let drag = null;
+
+  function flakeSprite(color) {
+    const c = document.createElement('canvas');
+    c.width = FLAKE_EDGE;
+    c.height = FLAKE_EDGE;
+    const g = c.getContext('2d');
+    g.translate(FLAKE_EDGE / 2, FLAKE_EDGE / 2);
+    g.strokeStyle = color;
+    g.lineWidth = 3.4;
+    g.lineCap = 'round';
+    const r = FLAKE_EDGE / 2 - 6;
+    g.beginPath();
+    for (let arm = 0; arm < 6; arm += 1) {
+      const a = (Math.PI / 3) * arm;
+      const ox = Math.cos(a);
+      const oy = Math.sin(a);
+      g.moveTo(0, 0);
+      g.lineTo(ox * r, oy * r);
+      const bx = ox * r * 0.56;
+      const by = oy * r * 0.56;
+      for (const side of [-1, 1]) {
+        const t = a + side * 0.62;
+        g.moveTo(bx, by);
+        g.lineTo(bx + Math.cos(t) * r * 0.3, by + Math.sin(t) * r * 0.3);
+      }
+    }
+    g.stroke();
+    return c;
+  }
+
+  function flakeSprites() {
+    const cs = getComputedStyle(document.documentElement);
+    const pick = (name, fallback) => String(cs.getPropertyValue(name)).trim() || fallback;
+    const palette = [pick('--accent', '#34e2c8'), pick('--accent-2', '#8b5cf6'), pick('--text', '#e9f7f5')];
+    // A cached flake keeps the colour it was drawn with, so the palette itself has to
+    // be the cache key — the theme button can change it under this.
+    const key = palette.join('|');
+    if (!sprites || key !== spriteKey) {
+      sprites = palette.map((color) => flakeSprite(color));
+      spriteKey = key;
+    }
+    return sprites;
+  }
+
+  function sizeLayer() {
+    if (!layer) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(window.innerWidth * dpr));
+    const h = Math.max(1, Math.round(window.innerHeight * dpr));
+    if (layer.width !== w || layer.height !== h) {
+      layer.width = w;
+      layer.height = h;
+    }
+    paint.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // The canvas is not in the document until the first click that needs it, so a
+  // visitor who never turns this on never carries an empty full-screen layer.
+  function ensureLayer() {
+    if (layer) return true;
+    const canvas = document.createElement('canvas');
+    canvas.className = 'weather-layer';
+    canvas.setAttribute('aria-hidden', 'true');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    layer = canvas;
+    paint = ctx;
+    document.body.appendChild(canvas);
+    sizeLayer();
+    window.addEventListener('resize', sizeLayer);
+    return true;
+  }
+
+  function addFlake(x, y, vx, vy, r) {
+    if (flakes.length >= FLAKE_LIMIT) return;
+    const set = flakeSprites();
+    flakes.push({
+      x, y, vx, vy, r,
+      rot: Math.random() * Math.PI,
+      spin: (Math.random() - 0.5) * 0.045,
+      age: 0,
+      span: 1.5 + Math.random() * 1.7,
+      sway: 0.25 + Math.random() * 0.55,
+      phase: Math.random() * 6.283,
+      sprite: set[(Math.random() * set.length) | 0]
+    });
+  }
+
+  function burst(x, y) {
+    if (!look.snow || !ensureLayer()) return;
+    const count = 8 + Math.round(look.snowDensity / 7);
+    for (let i = 0; i < count; i += 1) {
+      const a = (Math.PI * 2 * i) / count + Math.random() * 0.6;
+      const speed = 1.8 + Math.random() * 3.6;
+      addFlake(x, y, Math.cos(a) * speed, Math.sin(a) * speed - 1.1, 4 + Math.random() * 7);
+    }
+    wake();
+  }
+
+  // Density is the gap between flakes rather than a count per move, so a slow drag
+  // sheds a few and a fast flick sheds a ribbon without the total running away.
+  function shed(x, y, dx, dy, step) {
+    addFlake(x, y, dx / step * 0.75 + (Math.random() - 0.5), dy / step * 0.75 + Math.random() * 0.7,
+      3.5 + Math.random() * 6);
+    wake();
+  }
+
+  function wake() {
+    if (raf) return;
+    lastFrame = 0;
+    raf = requestAnimationFrame(frame);
+  }
+
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    // Clamped, because the first frame after a tab was in the background reports the
+    // whole gap since the last one and every flake would teleport off screen.
+    const dt = Math.min(3, lastFrame ? (now - lastFrame) / 16.667 : 1);
+    lastFrame = now;
+    const h = window.innerHeight;
+    paint.clearRect(0, 0, window.innerWidth, h);
+    for (let i = flakes.length - 1; i >= 0; i -= 1) {
+      const f = flakes[i];
+      f.age += dt / 60;
+      if (f.age >= f.span || f.y > h + 40) {
+        flakes.splice(i, 1);
+        continue;
+      }
+      f.vy += 0.055 * dt;
+      f.vx *= 1 - Math.min(0.05, 0.012 * dt);
+      f.x += (f.vx + Math.cos(f.phase + f.age * f.sway) * 0.35) * dt;
+      f.y += f.vy * dt;
+      f.rot += f.spin * dt;
+      paint.save();
+      paint.globalAlpha = Math.min(1, (f.span - f.age) / (f.span * 0.35));
+      paint.translate(f.x, f.y);
+      paint.rotate(f.rot);
+      paint.drawImage(f.sprite, -f.r, -f.r, f.r * 2, f.r * 2);
+      paint.restore();
+    }
+    if (!flakes.length) {
+      // Nothing alive means nothing to animate: the loop stops rather than redrawing
+      // an empty screen for the rest of the visit.
+      cancelAnimationFrame(raf);
+      raf = 0;
+      lastFrame = 0;
+    }
+  }
+
+  function stopSnow() {
+    flakes.length = 0;
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    lastFrame = 0;
+    if (paint) paint.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  }
+
+  function armSnow() {
+    window.addEventListener('pointerdown', (event) => {
+      if (!look.snow || event.button !== 0) return;
+      drag = { x: event.clientX, y: event.clientY, gap: 0 };
+      burst(event.clientX, event.clientY);
+    });
+    window.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      // A pointer that left the window never reported its release.
+      if (!look.snow || event.buttons === 0) { drag = null; return; }
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      drag.x = event.clientX;
+      drag.y = event.clientY;
+      const step = Math.max(5, 32 - Math.round(look.snowDensity / 3.5));
+      drag.gap += Math.hypot(dx, dy);
+      while (drag.gap >= step) {
+        drag.gap -= step;
+        shed(event.clientX, event.clientY, dx, dy, step);
+      }
+    });
+    const release = () => { drag = null; };
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+  }
+
   /* -------------------------------------------------------------- the trigger */
 
   let trigger = null;
@@ -526,6 +733,15 @@ window.Style = (() => {
         <span>Level <b data-lf="cueVal">45%</b></span>
         <input type="range" min="0" max="100" step="5" data-lf="cueVol" data-look-silent>
       </label>
+      <p class="lf-legend">Cursor</p>
+      <label class="lf-opt lf-toggle">
+        <input type="checkbox" data-lf="snow" data-look-silent>
+        <span>Snow from clicks and drags</span>
+      </label>
+      <label class="lf-slider">
+        <span>How much <b data-lf="snowVal">55%</b></span>
+        <input type="range" min="10" max="100" step="5" data-lf="snowDensity" data-look-silent>
+      </label>
       <div class="lf-foot">
         <button type="button" class="btn btn-ghost" data-lf="test" data-look-silent>Test</button>
         <button type="button" class="btn btn-ghost" data-lf="reset" data-look-silent>Reset</button>
@@ -584,6 +800,7 @@ window.Style = (() => {
         save();
         applyBackdrop();
         stopBed();
+        stopSnow();
         toggle(true);
         sync();
       }
@@ -626,6 +843,18 @@ window.Style = (() => {
         save();
         if (look.cue) play('click');
       }
+      if (input.dataset.lf === 'snow') {
+        look.snow = input.checked;
+        save();
+        if (!look.snow) {
+          stopSnow();
+        } else {
+          // Better to show it working here than to leave them wondering whether the
+          // tick did anything at all.
+          const box = input.getBoundingClientRect();
+          burst(box.left + box.width / 2, box.top + box.height / 2);
+        }
+      }
     });
 
     panel.addEventListener('input', (event) => {
@@ -645,6 +874,11 @@ window.Style = (() => {
       if (input.dataset.lf === 'cueVol') {
         look.cueVol = clamp(input.value, 0, 100, 45);
         panel.querySelector('[data-lf="cueVal"]').textContent = `${look.cueVol}%`;
+        save();
+      }
+      if (input.dataset.lf === 'snowDensity') {
+        look.snowDensity = clamp(input.value, 10, 100, 55);
+        panel.querySelector('[data-lf="snowVal"]').textContent = `${look.snowDensity}%`;
         save();
       }
     });
@@ -674,6 +908,9 @@ window.Style = (() => {
     panel.querySelector('[data-lf="cue"]').checked = look.cue;
     panel.querySelector('[data-lf="cueVol"]').value = String(look.cueVol);
     panel.querySelector('[data-lf="cueVal"]').textContent = `${look.cueVol}%`;
+    panel.querySelector('[data-lf="snow"]').checked = look.snow;
+    panel.querySelector('[data-lf="snowDensity"]').value = String(look.snowDensity);
+    panel.querySelector('[data-lf="snowVal"]').textContent = `${look.snowDensity}%`;
     panel.querySelector('[data-lf="picture"]').hidden = look.bg !== 'image';
     panel.querySelector('[data-lf="clearFile"]').hidden = !look.file;
     setPictureNote(look.file ? 'Kept in this browser only, and shown whenever the address box is empty.' : '');
@@ -713,6 +950,7 @@ window.Style = (() => {
   applyBackdrop();
   mount();
   armGestures();
+  armSnow();
 
   document.addEventListener('pointerdown', (event) => {
     const hit = event.target.closest('button, [role="tab"], .ov-provider');

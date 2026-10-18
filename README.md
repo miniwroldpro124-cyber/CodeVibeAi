@@ -85,12 +85,13 @@ them do on today's list), under **Edit** if it both takes a picture as input and
 it answers `audio/speech`. **Video** can only come from `VIDEO_MODELS`, because no video model
 appears in `/v1/models` at all.
 
-**Picture** is words in, image out. **Edit** is an image in, image out: you pick a file from disk, it
-is shrunk to 1100 px in the browser, and it travels to the vision model as an `image_url` part with
-your instruction — the shape that works on this gateway, since its `images/edits` endpoint refuses
-every body tried against it. The picture comes back either as a markdown image or as its own content
-part, and both are read. **Voice** posts to `/v1/audio/speech` and plays the answer through a `blob:`
-URL, because an `<audio src>` can carry neither a POST nor a session cookie.
+**Picture** is words in, image out. **Edit** is an image in, image out: you pick a file from disk or
+paste one straight off the clipboard, it is shrunk to 1100 px in the browser, and it travels to the
+vision model as an `image_url` part with your instruction — the shape that works on this gateway,
+since its `images/edits` endpoint refuses every body tried against it. The picture comes back either
+as a markdown image or as its own content part, and both are read. **Voice** posts to
+`/v1/audio/speech` and plays the answer through a `blob:` URL, because an `<audio src>` can carry
+neither a POST nor a session cookie.
 
 Money is never spent by a dropdown. One picture costs between 65 and 1800 dong on the provider's
 list, so anything at or above `MAX_PICTURE_DONG` (300 by default) is left out of the Picture list
@@ -527,6 +528,10 @@ anywhere, so naming them is not possible, and the alternative is to route every 
 function and pay the transfer twice. `blob:` is there for spoken audio: the voice route answers a
 POST with mp3 bytes that belong to the session that paid for them, so they are turned into a blob URL
 for `<audio>` rather than put into a URL the browser could cache or share.
+Note the asymmetry: `img-src` has no `blob:`. Any picture read off the visitor's own disk therefore
+goes through `FileReader.readAsDataURL` before it reaches an `<img>`, in the studio and in the look
+panel alike. A `blob:` URL there is not merely refused — a CSP-blocked image fires no `error` event,
+so the load hangs forever and the file picker looks like it does nothing.
 The carve-out is display-only: `connect-src` stays `'self'`, so nothing in a media URL can be fetched,
 posted to, or turned into a request; clips and picture links also carry `rel="noopener"` and
 `referrerpolicy="no-referrer"`, so the CDN is not told who was looking.
@@ -747,7 +752,7 @@ it cannot be abused as an open relay to the rest of the upstream API.
 ## Look & feel
 
 `public/style.js` adds one panel to every page, opened by the **Look** button next to the theme
-button. It holds three groups, and nothing in it is a server setting: the choice is stored in the
+button. It holds four groups, and nothing in it is a server setting: the choice is stored in the
 browser under `devchat.look.v1`, so another device stays on the defaults and the account list never
 sees any of it.
 
@@ -765,6 +770,13 @@ sees any of it.
 - **Interface sounds** — a tick on buttons, a short whoosh as a message goes out, a two-note chime
   when an answer lands, a low pair of tones when the request fails. One checkbox turns all of them
   off, and a level slider sets how loud.
+- **Cursor** — off by default. Turned on, a click throws a ring of snowflakes that gravity then
+  takes over, and dragging the mouse sheds a trail along the path the pointer came. *How much* is
+  the gap between flakes, so a slow drag loses a few and a fast flick loses a ribbon. Flakes are
+  drawn once into a sprite in the theme's own `--accent`, `--accent-2` and `--text` and blitted
+  after that, the layer is a `pointer-events: none` canvas that only enters the document on the
+  first click that needs it, and the animation loop cancels itself the moment nothing is alive
+  rather than redrawing an empty screen.
 
 No audio file is shipped with the site. Every sound is synthesised in the browser with WebAudio,
 which is why there is nothing to licence and nothing to download. Two things do come from the
