@@ -128,6 +128,40 @@ window.Auth = (() => {
     return { ok: res.ok, status: res.status, data: data || {} };
   }
 
+  /**
+   * The same call for a route that answers with a file instead of JSON — spoken
+   * audio is bytes, and api() above would try to parse them as text. Resolved in
+   * the same envelope shape so Auth.guard(res) works on it unchanged; on a failure
+   * the body is read as JSON for the server's own error message.
+   */
+  async function apiBinary(path, { method = 'POST', body, signal } = {}) {
+    let res;
+    try {
+      res = await fetch(apiUrl(path), {
+        method,
+        signal,
+        credentials: REMOTE ? 'omit' : 'same-origin',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body === undefined ? {} : body)
+      });
+    } catch (err) {
+      return { ok: false, status: 0, blob: null, data: { error: `Cannot reach the server: ${err.message}` } };
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      let data = null;
+      try { data = JSON.parse(text); } catch { /* a plain-text or HTML refusal */ }
+      const envelope = data && typeof data === 'object' && typeof data.error === 'string';
+      return {
+        ok: false,
+        status: res.status,
+        blob: null,
+        data: envelope ? data : { error: describeFailure(res, path) }
+      };
+    }
+    return { ok: true, status: res.status, blob: await res.blob(), data: {} };
+  }
+
   // A CDN, a static host or a rewrite that never reached the API all answer with
   // their own error page — and not every one of them is HTML. Rendering that as
   // "Request failed (404)" throws away the only diagnosis the user can act on, so
@@ -186,13 +220,22 @@ window.Auth = (() => {
   const OVERLAY_HTML = `
 <div class="ov-card" role="dialog" aria-modal="true" aria-labelledby="ovTitle">
   <div class="ov-logo" aria-hidden="true">
-    <svg viewBox="0 0 32 32"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+    <img src="/logo-mark.jpg" alt="" width="52" height="52">
   </div>
 
   <div class="ov-pane" data-pane="auth">
     <h1 id="ovTitle">Sign in to DevChat</h1>
     <p class="ov-sub">Your chats, your model list and your spend all live behind an account.</p>
     <p class="ov-notice" data-oauth-notice hidden></p>
+
+    <div class="ov-oauth" data-oauth hidden>
+      <div class="ov-providers" data-oauth-buttons></div>
+      <p class="ov-note ov-privnote">
+        Only a name, an address and an avatar come back from the provider. Your <code>sk-</code> key
+        is still yours to paste, and still nothing else can read it.
+      </p>
+      <p class="ov-or"><span>or use a username</span></p>
+    </div>
 
     <div class="ov-tabs" role="tablist">
       <button type="button" class="ov-tab is-on" data-mode="login" role="tab">Sign in</button>
@@ -216,14 +259,6 @@ window.Auth = (() => {
       </button>
     </form>
 
-    <div class="ov-oauth" data-oauth hidden>
-      <p class="ov-or"><span>or</span></p>
-      <div class="ov-providers" data-oauth-buttons></div>
-      <p class="ov-note">
-        The provider only ever gets a username and an address to sign you in. Your <code>sk-</code>
-        key is still yours to paste, and still nothing else can read it.
-      </p>
-    </div>
     <p class="ov-note">Open sign-up. No email, no invite code.</p>
   </div>
 
@@ -294,19 +329,24 @@ window.Auth = (() => {
   };
 
   const PROVIDER_LABELS = { google: 'Continue with Google', github: 'Continue with GitHub' };
+  const PROVIDER_NAMES = { google: 'Google', github: 'GitHub' };
 
   function renderOauth() {
     const el = ensureOverlay();
     const box = el.querySelector('[data-oauth]');
     const buttons = el.querySelector('[data-oauth-buttons]');
     buttons.textContent = '';
-    box.hidden = state.oauth.length === 0;
-    for (const provider of state.oauth) {
+    // Whatever the server says it offers, a name with no mark here would render a
+    // button that navigates to a route which does not exist.
+    const offered = state.oauth.filter((provider) => PROVIDER_MARKS[provider]);
+    box.hidden = offered.length === 0;
+    for (const provider of offered) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'ov-provider';
       button.dataset.oauthProvider = provider;
-      button.innerHTML = `${PROVIDER_MARKS[provider]}<span>${PROVIDER_LABELS[provider]}</span>`;
+      button.innerHTML = `<span class="ov-mark">${PROVIDER_MARKS[provider]}</span>`
+        + `<span data-provider-label>${PROVIDER_LABELS[provider]}</span>`;
       buttons.append(button);
     }
   }
@@ -451,6 +491,11 @@ window.Auth = (() => {
         // page in the browser, and nothing about the token ever passes through
         // JavaScript on the way back.
         for (const button of el.querySelectorAll('[data-oauth-provider]')) button.disabled = true;
+        provider.dataset.busy = 'on';
+        const label = provider.querySelector('[data-provider-label]');
+        // A handover to another site looks identical to a dead button for the second
+        // it takes, so the one you pressed says what it is doing.
+        if (label) label.textContent = `Opening ${PROVIDER_NAMES[provider.dataset.oauthProvider]}…`;
         setError(el.querySelector('[data-form="auth"]'), '');
         el.querySelector('[data-oauth-notice]').hidden = true;
         location.assign(apiUrl(`/api/auth/oauth/${provider.dataset.oauthProvider}`));
@@ -572,6 +617,7 @@ window.Auth = (() => {
 
   return {
     api,
+    apiBinary,
     apiUrl,
     authHeaders,
     boot,

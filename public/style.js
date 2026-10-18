@@ -4,9 +4,13 @@
    of devchat.prefs.v1 in memory and writes the whole object back, so a value added in
    there can be silently reverted by a chat page that loaded before you changed it.
 
-   No sound file ships with the site. Every one is synthesised, which keeps the page
-   inside a Content-Security-Policy that allows no media-src for blob: URLs, costs
-   nothing to download, and needs no licensing. */
+   No sound file ships with the site. Every one is synthesised, so nothing has to be
+   downloaded or licensed. A visitor who wants their own track picks it from disk and
+   it is decoded in the browser, this visit only.
+
+   A picture picked from disk is the one thing here that outlives the visit: it is
+   shrunk and re-encoded before it goes into localStorage, and never leaves this
+   browser. */
 window.Style = (() => {
   'use strict';
 
@@ -15,7 +19,7 @@ window.Style = (() => {
     ['aurora', 'Aurora', 'the drifting colour wash the site ships with'],
     ['grid', 'Grid', 'the grid, nothing else'],
     ['plain', 'Plain', 'a flat background'],
-    ['image', 'Picture', 'your own address, dimmed for reading']
+    ['image', 'Picture', 'a picture you own, dimmed for reading']
   ];
   const BEDS = [
     ['none', 'Off'],
@@ -25,7 +29,7 @@ window.Style = (() => {
     ['own', 'Your file', 'a track you pick, this visit only']
   ];
   const DEFAULTS = {
-    bg: 'aurora', image: '', dim: 0,
+    bg: 'aurora', image: '', file: '', dim: 0,
     ambient: 'none', ambientVol: 25,
     cue: true, cueVol: 45
   };
@@ -50,12 +54,26 @@ window.Style = (() => {
     return /^https:\/\/[A-Za-z0-9.\-_%~!?*'+,;=&#/@:]{4,400}$/.test(url) ? url : '';
   }
 
+  // A backdrop taken from disk arrives as a data: url, which carries the same risk in
+  // the same place, so it gets the same kind of check: base64 alphabet and nothing
+  // else. The length cap is the localStorage budget — one origin holds about 5 MB,
+  // and a re-encoded 1440px picture lands under 1 MB.
+  const PICTURE_EDGE = 1440;
+  const PICTURE_BUDGET = 1000000;
+
+  function safeFile(value) {
+    const url = String(value || '').trim();
+    return /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(url)
+      && url.length <= PICTURE_BUDGET ? url : '';
+  }
+
   function read() {
     let raw = {};
     try { raw = JSON.parse(localStorage.getItem(LOOK_KEY) || '{}') || {}; } catch { raw = {}; }
     return {
       bg: BACKDROPS.some(([id]) => id === raw.bg) ? raw.bg : DEFAULTS.bg,
       image: safeImage(raw.image),
+      file: safeFile(raw.file),
       dim: clamp(raw.dim, 0, 80, DEFAULTS.dim),
       ambient: BEDS.some(([id]) => id === raw.ambient) ? raw.ambient : DEFAULTS.ambient,
       ambientVol: clamp(raw.ambientVol, 0, 100, DEFAULTS.ambientVol),
@@ -66,8 +84,10 @@ window.Style = (() => {
 
   let look = read();
 
+  // False when the browser refused the write — private mode, or a picture over the
+  // quota. The setting still holds for this visit either way.
   function save() {
-    try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch { /* private mode keeps it for the visit */ }
+    try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); return true; } catch { return false; }
   }
 
   /* ---------------------------------------------------------------- backdrop */
@@ -76,10 +96,65 @@ window.Style = (() => {
     const root = document.documentElement;
     root.dataset.bg = look.bg;
     root.style.setProperty('--look-dim', `${look.dim}%`);
-    root.style.setProperty(
-      '--look-image',
-      look.bg === 'image' && look.image ? `url("${look.image}")` : 'none'
-    );
+    // A typed address wins over a stored file, so clearing the box brings the picture
+    // that is still kept back rather than hiding it somewhere nobody can find.
+    const url = look.bg === 'image' ? (look.image || look.file) : '';
+    root.style.setProperty('--look-image', url ? `url("${url}")` : 'none');
+  }
+
+  /* ------------------------------------------------ a picture from this device */
+
+  function readAsDataUrl(file) {
+    return new Promise((done, fail) => {
+      const reader = new FileReader();
+      reader.onload = () => done(String(reader.result));
+      reader.onerror = () => fail(reader.error || new Error('unreadable'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImage(src) {
+    return new Promise((done, fail) => {
+      const img = new Image();
+      img.onload = () => done(img);
+      img.onerror = () => fail(new Error('unreadable'));
+      img.src = src;
+    });
+  }
+
+  /* Shrunk and re-encoded before it is stored, because a phone photo is several
+     megabytes and the origin's whole localStorage budget is about five. The file is
+     read as a data: url rather than a blob: one — img-src allows data: and not blob:. */
+  async function chooseBackdrop(file) {
+    if (!file) return;
+    setPictureNote('Reading…');
+    try {
+      const img = await loadImage(await readAsDataUrl(file));
+      const edge = Math.max(img.naturalWidth, img.naturalHeight);
+      if (!edge) throw new Error('empty picture');
+      const scale = Math.min(1, PICTURE_EDGE / edge);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const paint = canvas.getContext('2d');
+      // JPEG carries no alpha, so a transparent picture is laid over the page's own
+      // colour rather than over black.
+      paint.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#000';
+      paint.fillRect(0, 0, canvas.width, canvas.height);
+      paint.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const kept = safeFile(canvas.toDataURL('image/jpeg', 0.82));
+      if (!kept) {
+        setPictureNote('Even shrunk, that picture is too detailed to keep. Try a smaller one.');
+        return;
+      }
+      look.file = kept;
+      const stored = save();
+      applyBackdrop();
+      sync();
+      if (!stored) setPictureNote('This browser will not hold a picture that size — it lasts for this visit only.');
+    } catch {
+      setPictureNote('That file could not be read as a picture.');
+    }
   }
 
   /* ------------------------------------------------------------------- audio */
@@ -425,10 +500,15 @@ window.Style = (() => {
           <input type="url" data-lf="image" data-look-silent placeholder="https://…/wallpaper.jpg"
                  autocapitalize="none" spellcheck="false">
         </label>
+        <div class="lf-file">
+          <button type="button" class="btn btn-ghost" data-lf="pick">From this device</button>
+          <button type="button" class="btn btn-ghost" data-lf="clearFile" hidden>Remove</button>
+        </div>
         <label class="lf-slider">
           <span>Dim for reading <b data-lf="dimVal">0%</b></span>
           <input type="range" min="0" max="80" step="5" data-lf="dim" data-look-silent>
         </label>
+        <p class="lf-note" data-lf="fileNote"></p>
       </div>
       <p class="lf-legend">Ambient sound</p>
       <div class="lf-opts">${beds}</div>
@@ -470,10 +550,30 @@ window.Style = (() => {
     own.addEventListener('change', () => loadOwn(own.files?.[0]));
     document.body.appendChild(own);
 
+    const pic = document.createElement('input');
+    pic.type = 'file';
+    pic.accept = 'image/*';
+    pic.id = 'lookPicture';
+    pic.hidden = true;
+    pic.addEventListener('change', () => {
+      const file = pic.files?.[0];
+      // Cleared first, so choosing the same picture twice counts as a new choice.
+      pic.value = '';
+      chooseBackdrop(file);
+    });
+    document.body.appendChild(pic);
+
     panel.addEventListener('click', (event) => {
       const act = event.target.closest('[data-lf]');
       if (!act) return;
       if (act.dataset.lf === 'close') toggle();
+      if (act.dataset.lf === 'pick') document.getElementById('lookPicture').click();
+      if (act.dataset.lf === 'clearFile') {
+        look.file = '';
+        save();
+        applyBackdrop();
+        sync();
+      }
       if (act.dataset.lf === 'test') {
         play('click');
         play('send');
@@ -515,6 +615,11 @@ window.Style = (() => {
         save();
         applyBackdrop();
         sync();
+        // Pasting a data: url here is a natural mistake now the file goes into storage
+        // as one, and the silent refusal above would look like a broken box.
+        if (!url && input.value.trim()) {
+          setPictureNote('That address was refused. A picture from this device goes through the button above.');
+        }
       }
       if (input.dataset.lf === 'cue') {
         look.cue = input.checked;
@@ -550,6 +655,11 @@ window.Style = (() => {
     if (note) note.textContent = text || '';
   }
 
+  function setPictureNote(text) {
+    const note = panel?.querySelector('[data-lf="fileNote"]');
+    if (note) note.textContent = text || '';
+  }
+
   // Keep the controls showing what is stored, and show the picture row only when a
   // picture is the chosen background.
   function sync() {
@@ -565,6 +675,8 @@ window.Style = (() => {
     panel.querySelector('[data-lf="cueVol"]').value = String(look.cueVol);
     panel.querySelector('[data-lf="cueVal"]').textContent = `${look.cueVol}%`;
     panel.querySelector('[data-lf="picture"]').hidden = look.bg !== 'image';
+    panel.querySelector('[data-lf="clearFile"]').hidden = !look.file;
+    setPictureNote(look.file ? 'Kept in this browser only, and shown whenever the address box is empty.' : '');
     setOwnNote(look.ambient === 'own' && !ownBuffer
       ? 'Pick a track below — nothing is uploaded anywhere.'
       : look.ambient === 'own' ? 'Playing this visit only.' : '');

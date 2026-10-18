@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>Media studio — DevChat</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d9488'/%3E%3Cpath d='M12 10l-6 6 6 6M20 10l6 6-6 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/styles.css?v=9">
+<link rel="icon" type="image/jpeg" href="/logo-mark.jpg">
+<link rel="stylesheet" href="/styles.css?v=11">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
 <script src="/watchdog.js" data-mode="warn" defer></script>
@@ -16,7 +16,7 @@
 <div class="page">
   <header class="page-head">
     <a class="page-logo" href="/" aria-label="DevChat home">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 10l-6 6 6 6M20 10l6 6-6 6"/></svg>
+      <img src="/logo-mark.jpg" alt="" width="34" height="34">
     </a>
     <h1>Media studio</h1>
     <span class="spacer"></span>
@@ -41,7 +41,9 @@
 
       <div class="sp-tabs" role="tablist" aria-label="What to generate">
         <button type="button" class="sp-tab is-on" data-mode="image" role="tab" aria-selected="true">Picture</button>
+        <button type="button" class="sp-tab" data-mode="edit" role="tab" aria-selected="false">Edit a picture</button>
         <button type="button" class="sp-tab" data-mode="video" role="tab" aria-selected="false">Video</button>
+        <button type="button" class="sp-tab" data-mode="voice" role="tab" aria-selected="false">Voice</button>
       </div>
 
       <div class="field-grid" id="imageFields">
@@ -66,6 +68,29 @@
         <label class="field">
           <span>Reference image URL (optional)</span>
           <input type="url" id="imageUrl" placeholder="https://…/sketch.png" spellcheck="false" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="field-grid" id="editFields" hidden>
+        <label class="field">
+          <span>Model</span>
+          <select id="editModel"></select>
+        </label>
+        <label class="field">
+          <span>Your picture</span>
+          <input type="file" id="editFile" accept="image/png,image/jpeg,image/webp,image/gif">
+        </label>
+      </div>
+      <p class="picture-preview" id="editPreview" hidden></p>
+
+      <div class="field-grid" id="voiceFields" hidden>
+        <label class="field">
+          <span>Model</span>
+          <select id="voiceModel"></select>
+        </label>
+        <label class="field">
+          <span>Voice name</span>
+          <input type="text" id="voiceName" value="alloy" spellcheck="false" autocomplete="off" maxlength="40">
         </label>
       </div>
 
@@ -98,9 +123,14 @@
       </div>
 
       <label class="field studio-prompt">
-        <span>Prompt</span>
+        <span id="promptLabel">Prompt</span>
         <textarea id="prompt" rows="4" spellcheck="false" placeholder="A red fox standing in fresh snow, low afternoon light, 35mm"></textarea>
       </label>
+
+      <div class="btn-row studio-polish">
+        <button type="button" class="mini-btn" id="polishBtn">Write a better prompt</button>
+        <span class="sp-note" id="polishNote"></span>
+      </div>
 
       <div class="btn-row studio-actions">
         <button type="button" class="btn btn-primary" id="goBtn">Generate</button>
@@ -109,11 +139,15 @@
         <span class="pill dim" id="statusChip" hidden></span>
       </div>
 
-      <p class="card-sub studio-note" id="videoNote" hidden>
-        A clip is a job, not an answer: the request only returns a task id, then this page asks for it
-        every few seconds until the file is ready. Keep the tab open — closing it does not cancel the job,
-        it only stops you watching it.
-      </p>
+      <div class="confirm-row" id="confirmBox" hidden>
+        <p class="card-sub" id="confirmText"></p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary" id="confirmBtn">Confirm and pay</button>
+          <button type="button" class="btn btn-ghost" id="confirmNoBtn">Cancel</button>
+        </div>
+      </div>
+
+      <p class="card-sub studio-note" id="paneNote" hidden></p>
 
       <div class="callout" id="errorBox" hidden></div>
     </section>
@@ -123,14 +157,15 @@
       <p class="card-sub" id="resultsSub"></p>
       <div class="gallery" id="gallery"></div>
       <div class="clip" id="clip"></div>
+      <div class="clip" id="audio"></div>
     </section>
 
   </div>
 </div>
 
-<script src="/auth.js?v=9"></script>
-<script src="/page.js?v=9"></script>
-<script src="/style.js?v=9"></script>
-<script src="/studio.js?v=9"></script>
+<script src="/auth.js?v=11"></script>
+<script src="/page.js?v=11"></script>
+<script src="/style.js?v=11"></script>
+<script src="/studio.js?v=11"></script>
 </body>
 </html>

@@ -344,6 +344,7 @@
       stat(int(guards.length), 'Accounts with failed tries'),
       stat(`${p.adminPasswordChars || 12}+ chars`, 'Admin password policy'),
       stat(`${p.reauthMinutes || 10} min`, `Step-up window (${p.reauth || 'sensitive'})`),
+      stat(`${int((data.throttle || {}).streams || 0)}/${int((data.throttle || {}).maxStreams || 12)}`, 'Answers streaming now'),
       stat(int((data.events || []).length), 'Audit events shown')
     ].join('');
 

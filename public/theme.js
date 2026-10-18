@@ -19,8 +19,15 @@ try {
   root.dataset.bg = bg;
   const dim = Number(look.dim);
   root.style.setProperty('--look-dim', `${Number.isFinite(dim) ? Math.min(80, Math.max(0, dim)) : 0}%`);
-  if (bg === 'image' && /^https:\/\/[A-Za-z0-9.\-_%~!?*'+,;=&#/@:]{4,400}$/.test(String(look.image || ''))) {
-    root.style.setProperty('--look-image', `url("${look.image}")`);
+  // The picture can be an https address or one re-encoded from this device, and both
+  // end up inside url("…"), so both are checked for the characters that would break
+  // out of it. style.js is the one that validates for real.
+  const address = /^https:\/\/[A-Za-z0-9.\-_%~!?*'+,;=&#/@:]{4,400}$/.test(String(look.image || ''))
+    ? look.image : '';
+  const kept = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(String(look.file || ''))
+    && String(look.file).length <= 1000000 ? look.file : '';
+  if (bg === 'image' && (address || kept)) {
+    root.style.setProperty('--look-image', `url("${address || kept}")`);
   }
 } catch {
   /* no localStorage, no backdrop — the stylesheet keeps the aurora default */

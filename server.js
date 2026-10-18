@@ -97,6 +97,27 @@ const server = createServer((req, res) => {
     });
 });
 
+// Timeouts mostly on the request, not on the answer. Each of the first three
+// bounds how long a client may take to *deliver* something, so a chat stream that
+// runs for four minutes is untouched once its body has arrived. Vercel enforces its
+// own in front of api/index.js; this is the path where nothing else would.
+server.requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS) || 120_000;
+server.headersTimeout = Number(process.env.HEADERS_TIMEOUT_MS) || 20_000;
+// Must stay below headersTimeout: Node measures the header budget from the end of
+// the idle window, so an idle timeout larger than it would make the first request
+// on a kept-alive connection look overdue.
+server.keepAliveTimeout = Number(process.env.KEEP_ALIVE_TIMEOUT_MS) || 5_000;
+// How many requests one connection may have queued at the same time. A browser
+// never pipelines that deeply, so the cap only ever stops a script from filling a
+// single socket with pending requests and making the server parse all of them.
+server.maxRequestsPerSocket = Number(process.env.MAX_REQUESTS_PER_SOCKET) || 32;
+// Measured on this runtime, not assumed: a connection that sends part of a header
+// block and goes quiet is left open by both headersTimeout and requestTimeout,
+// because neither counts until a request has begun. This socket-level inactivity
+// timer is the setting that actually drops it. The routes that legitimately go
+// silent upstream clear it for their own socket — see clearIdleTimeout in lib/http.
+server.timeout = Number(process.env.SOCKET_TIMEOUT_MS) || 30_000;
+
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\n  Port ${PORT} is already in use by another process.`);

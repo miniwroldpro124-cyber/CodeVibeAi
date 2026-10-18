@@ -77,16 +77,31 @@ regardless of what the page shows.
 
 ## Studio and coder setup
 
-`/studio.html` generates pictures and clips with the signed-in account's own key. The picture list
-is built from the live catalogue: a model is offered only if `/v1/models` says it answers
-`/v1/images/generations` (13 of them do; one only answers edits, and one is a text-to-speech voice).
-Video models are not in the catalogue at all, so that list comes from `VIDEO_MODELS`.
+`/studio.html` has four tabs — Picture, Edit, Video, Voice — and every one of them is charged to the
+signed-in account's own key. What each offers is derived from the live catalogue instead of typed in:
+a model appears under **Picture** if `/v1/models` says it answers `/v1/images/generations` (10 of
+them do on today's list), under **Edit** if it both takes a picture as input and returns one —
+`chat/completions` plus `images/generations`, which is one model at 65 dong — and under **Voice** if
+it answers `audio/speech`. **Video** can only come from `VIDEO_MODELS`, because no video model
+appears in `/v1/models` at all.
 
-Generation is not free, and the page says what it costs before you press the button: the price chip
-under the prompt shows the provider's own per-picture rate and the same figure with the current
-markup. Results keep the base64 or CDN URL the provider returned — pictures inline, clips as a
-`no-referrer` link, because those CDN hosts are not a published allowlist and the CSP cannot name
-them in advance.
+**Picture** is words in, image out. **Edit** is an image in, image out: you pick a file from disk, it
+is shrunk to 1100 px in the browser, and it travels to the vision model as an `image_url` part with
+your instruction — the shape that works on this gateway, since its `images/edits` endpoint refuses
+every body tried against it. The picture comes back either as a markdown image or as its own content
+part, and both are read. **Voice** posts to `/v1/audio/speech` and plays the answer through a `blob:`
+URL, because an `<audio src>` can carry neither a POST nor a session cookie.
+
+Money is never spent by a dropdown. One picture costs between 65 and 1800 dong on the provider's
+list, so anything at or above `MAX_PICTURE_DONG` (300 by default) is left out of the Picture list
+*and* refused on the route that spends, because a filtered list is a hint rather than a control.
+Editing sits outside that ceiling on purpose — it costs what the vision model charges, which can be
+more — so the Edit tab names the price and waits for a confirm click first. Every tab shows the
+provider's rate and the marked-up figure under the prompt before you press Go, and a prompt-writing
+button rewrites what you typed into a fuller description (that rewrite is a normal chat request and
+is billed as one). Results keep the base64 or CDN URL the provider returned — pictures inline, clips
+as a `no-referrer` link, because those CDN hosts are not a published allowlist and the CSP cannot
+name them in advance.
 
 `/coder.html` is the provider's setup page turned into copyable config for the tools people actually
 paste a key into. Every snippet is the published shape with three tokens replaced: `{V1}` becomes
@@ -122,7 +137,9 @@ Settings live in `.env` (copy `.env.example` to start):
 | `GITHUB_CLIENT_ID`      | —                         | OAuth app from GitHub → Developer settings.                    |
 | `GITHUB_CLIENT_SECRET`  | —                         | Its secret.                                                    |
 | `VIDEO_MODELS`          | `MiniMax-H3,MiniMax-H3-Max` | The studio's video list. Comma-separated model ids; needed because `/v1/models` does not contain any video model. |
+| `MAX_PICTURE_DONG`      | `300`                     | Ceiling for the Picture tab, in dong per image. Models at or over it are not listed and are refused when asked for. `0` offers every picture model; editing is never covered by it. |
 | `DEVCHAT_LOCAL_DB`      | —                         | `1` ignores `TURSO_*` and uses the local file database even when this `.env` has a live URL. See "Testing without touching live data". |
+| anti-abuse knobs        | see below                 | `WINDOW_*`, `DAILY_BUDGET_*`, `MAX_STREAMS_*`, `MAX_MEDIA_*` and the `*_TIMEOUT_MS` deadlines — every default and what it counts is in the Anti-abuse table. |
 
 `XAH_API_KEY` is **no longer used**. Keys belong to the accounts that use them; there is no shared
 server key. If yours is still sitting in `.env` from an earlier version, delete the line.
@@ -180,6 +197,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0 node .smoketest/driver-unit.mjs    # one driver c
 NODE_TLS_REJECT_UNAUTHORIZED=0 node .smoketest/hosted-run.mjs     # the Vercel function end to end
 node .smoketest/boot-guard.mjs                                   # a function with no database refuses
 node .smoketest/migrate-run.mjs                                  # the copy into a hosted database
+node .smoketest/limits-run.mjs                                   # the anti-abuse layer, over two instances
 ```
 
 `NODE_TLS_REJECT_UNAUTHORIZED=0` is there because the fake provider answers over HTTPS with a
@@ -502,10 +520,13 @@ That means:
 - nothing the page loads can talk to another origin, so stolen session data has nowhere to go;
 - the site cannot be framed, which kills the clickjacking route into the key settings panel.
 
-Two origins are opened, and only for display: `img-src 'self' data: https:` and `media-src https:`.
-A generated picture arrives as `data:` and a generated clip is served from whichever CDN the provider
-happens to use for that model — those hosts are not published anywhere, so naming them is not
-possible, and the alternative is to route every byte through the function and pay the transfer twice.
+Two origins are opened, and only for display: `img-src 'self' data: https:` and
+`media-src 'self' blob: https:`. A generated picture arrives as `data:` and a generated clip is
+served from whichever CDN the provider happens to use for that model — those hosts are not published
+anywhere, so naming them is not possible, and the alternative is to route every byte through the
+function and pay the transfer twice. `blob:` is there for spoken audio: the voice route answers a
+POST with mp3 bytes that belong to the session that paid for them, so they are turned into a blob URL
+for `<audio>` rather than put into a URL the browser could cache or share.
 The carve-out is display-only: `connect-src` stays `'self'`, so nothing in a media URL can be fetched,
 posted to, or turned into a request; clips and picture links also carry `rel="noopener"` and
 `referrerpolicy="no-referrer"`, so the CDN is not told who was looking.
@@ -533,6 +554,113 @@ Three knobs:
 
 `warn` is the default on all five pages. Detection is deliberately quiet: one report per kind per
 minute on the client, and the same again on the server, so the audit list cannot be flooded.
+
+## Anti-abuse
+
+The economics here are unusual, so say the obvious part first: **every chat, picture and clip is
+signed with the signed-in account's own `sk-` key.** An attacker burning tokens spends their own
+credit. What a request does cost *you* is a Vercel function invocation and its execution seconds, a
+couple of Turso round trips, a connection held open for up to the 300 s `maxDuration`, and the provider
+round trip. The ceilings in [lib/limits.js](lib/limits.js) are sized against that, not against tokens.
+
+**Layer 1 — this process.** A fixed-window bucket per address over every `/api/*` path, run before the
+route table is searched, so a scanner walking URLs that do not exist still spends from it. A per-tier
+bucket on the routes that cost something. A per-account rate on the paid ones. In-flight slot counters
+for answers streaming and media jobs generating, capped per account and for the whole instance.
+Immediate and free — and it honestly covers one warm instance, which on Vercel is one container's share
+of the traffic, nothing more.
+
+**Layer 2 — the database.** `throttle_window` keeps a fixed-window hit count per tier per address and
+per account, written and read back by one `INSERT … ON CONFLICT … RETURNING`, so the ceiling survives a
+cold start and adds up over every instance at once. The daily budget is not a counter at all:
+`usage_log` already holds a row per paid request, so an account's last 24 hours is one indexed read
+against two ceilings, and nothing new has to be written to keep it true. Rows older than a day are
+deleted on every cold start, because a flood is what fills the table. That table is created by the same
+`CREATE TABLE IF NOT EXISTS` pass that has always run at boot, so shipping this needs no migration on
+the live database — and if the table is ever dropped, layer 1 keeps working on its own.
+
+Both layers refuse the same way: `429` with `Retry-After`, and a sentence naming what ran out —
+`Too many paid requests from this address. Wait 43s.` or `This account has used its 200.000 ₫ daily
+limit.` Never a `401`, because the browser reads that as "your session died" and signs people out in
+the middle of being attacked. Each refusal also leaves one `throttled` row in the audit list the admin
+page reads — at most one per bucket per five minutes, because a defence that buys a database write for
+every rejected request is the attack wearing a defence's clothes.
+
+The durable reads **fail open**. A Turso that cannot be reached is logged and the request goes through:
+layer 1 still holds that instance, and turning a counter outage into "nobody can chat" is the worse bug.
+
+| Knob                             | Default        | What it counts                                                |
+| -------------------------------- | -------------- | ------------------------------------------------------------- |
+| `MAX_REQUESTS_PER_MINUTE`        | 300            | every `/api/*` request per address, including 404s             |
+| `MAX_EXPENSIVE_PER_IP_MINUTE`    | 60             | paid requests per address                                      |
+| `MAX_AUTH_PER_IP_MINUTE`         | 40             | sign-in attempts per address                                   |
+| `MAX_PER_USER_MINUTE`            | 40             | paid requests per account                                      |
+| `WINDOW_SECONDS` / `WINDOW_MAX`  | 300 / 150      | paid requests, per address **and** per account, in the database |
+| `AUTH_WINDOW_SECONDS` / `_MAX`   | 900 / 100      | sign-in attempts per address, in the database                  |
+| `DAILY_BUDGET_DONG` / `_REQUESTS`| 200000 / 5000  | per account over a rolling 24 h, read from `usage_log`         |
+| `MAX_STREAMS_PER_USER` / `_TOTAL`| 3 / 12         | answers streaming at the same time                             |
+| `MAX_MEDIA_PER_USER` / `_TOTAL`  | 2 / 4          | picture and video jobs at the same time                        |
+
+The paid window counts an address and an account in **separate rows** — one address can be inside a
+sign-in window and a paid-request window at the same time with different budgets, and sharing a row
+would let the cheaper one spend the dearer one's. Every value is a default you can raise or lower in
+`.env`; it needs a restart (or a redeploy) to reach a running server.
+
+`server.js` adds the deadlines for clients that are slow on purpose. `api/index.js` does not need them:
+Vercel owns those sockets and enforces its own.
+
+| Deadline                 | Default  | What it bounds                                              |
+| ------------------------ | -------- | ----------------------------------------------------------- |
+| `REQUEST_TIMEOUT_MS`     | 120000 | how long a client may take to *deliver* the request — not to be answered |
+| `HEADERS_TIMEOUT_MS`     | 20000  | headers, then the start of the body                                  |
+| `KEEP_ALIVE_TIMEOUT_MS`  | 5000   | a reused connection doing nothing                                     |
+| `MAX_REQUESTS_PER_SOCKET`| 32     | requests queued on one connection at the same time                    |
+| `SOCKET_TIMEOUT_MS`      | 30000  | socket inactivity — the one that actually drops a slowloris           |
+| `BODY_TIMEOUT_MS`        | 60000  | one request body — a body that never arrives is answered `408`, then the connection is closed |
+
+Two of those are not what the Node documentation makes them sound like, and both were measured rather
+than assumed: a connection that sends half a header block and goes quiet is left open by
+`headersTimeout` *and* `requestTimeout`, because neither starts counting until a request has begun.
+Only the socket-level timer drops it — which would also reap a legitimate chat, silent while the model
+reasons, or a picture that is three minutes with nothing on the wire. So the three long routes clear it
+for their own socket (`clearIdleTimeout` in [lib/http.js](lib/http.js)) and Node re-arms
+`keepAliveTimeout` when the answer finishes. `.smoketest/limits-run.mjs` proves both halves on one
+instance: a stream with a 2.6 s pause in the middle arrives complete, and a half-sent header block on
+that same server is closed without a reply.
+
+### What only the platform can do
+
+Nothing in this repository stops a flood. The code sees what the edge let through, and 10 000
+addresses each staying under a per-address ceiling still cost 10 000 function invocations. That shape
+is the platform's job, and it is a handful of switches — in this order:
+
+1. **Vercel → Project → Settings → Firewall.** Layer-7 DDoS mitigation runs on every request already;
+   what follows is the opt-in part.
+2. **Attack Challenge Mode** — the lever to pull *while* something is happening. It asks every visitor
+   for a browser check, so a scripted flood stops at the edge and real users pass through in a second.
+   Switch it back off afterwards; left on forever it charges every visitor a round trip.
+3. **Firewall rules → rate limiting** on the routes that hold a connection: `POST /api/chat`,
+   `/api/image`, `/api/video`. An edge rule counts across all of an attacker's addresses at once,
+   which is the one thing the two layers above cannot do.
+4. **Managed rulesets (WAF)** set to *Block* rather than *Log only* for `/api/*`, so a scanner never
+   reaches the function that would answer it politely.
+5. **Bot protection**, and an **IP or country rule** if your users are where you think they are.
+6. **Notifications and a spend cap** on the Vercel account. A flood that does get through arrives as
+   function invocations; you want an email that day, not an invoice at the end of the month.
+7. Optional and strongest: put **Cloudflare in front of a custom domain** (DNS → Proxied). Its
+   rate-limiting rule, bot fight mode and *Under Attack* mode then sit in front of Vercel, and
+   `TRUST_PROXY=1` still reads the right address, because the visitor is the first entry of
+   `X-Forwarded-For` — which is what `clientIp()` takes.
+
+Plan tiers move, so treat the list as the shape and the dashboard as the truth: check which of these
+your plan actually includes before you rely on it. Then verify from a shell — loop `curl -i` at a paid
+route and watch whose answer you get: your own `429` means the request reached the app, a `403` or a
+challenge page with `cf-ray` / `x-vercel-*` headers means the edge took it. The **Security** tab of
+`/admin.html` shows `Answers streaming now` beside its ceiling, the accounts locked for failed
+passwords, and the `throttled` rows, which is where you will see which layer is doing the work.
+
+Do not set `TRUST_PROXY=1` on a `node server.js` that anyone can reach directly. A client could then
+name its own address and choose which bucket it lands in, which is every limiter at once turned off.
 
 ## Pricing
 
@@ -572,10 +700,12 @@ it cannot be abused as an open relay to the rest of the upstream API.
   prompt may or may not produce a trace, so the chip omits it when the model did not think.
 - **Real cost per reply** — token counts and the provider's actual charge (`usage.x_ckey.cost`, ₫).
 - **500+ models** in a searchable picker, plus a filterable, sortable price list on the pricing page.
-- **Media studio** — pictures and clips generated with the account's own key, listed only for models
-  the provider's catalogue says can answer the endpoint, with the price shown before you press
-  Generate. A clip is a job rather than a request: the proxy takes the task id back from the provider
-  and the page polls it until a file appears, so a long render does not have to hold one request open.
+- **Media studio** — four tabs, pictures, edits, clips and spoken audio, all generated with the
+  account's own key and listed only for models the provider's catalogue says can answer the endpoint,
+  with the price shown before you press Generate and a confirm click on the one tab whose price can
+  surprise you. A clip is a job rather than a request: the proxy takes the task id back from the
+  provider and the page polls it until a file appears, so a long render does not have to hold one
+  request open.
 - **Coder setup** — the provider's integration guide turned into copyable config for Cursor,
   Claude Code, VS Code, Codex, Droid, OpenCode and OpenClaw, with this deployment's base URL already
   filled in (root for Claude Code, `/v1` for everything OpenAI-shaped) and the key left as a
@@ -584,6 +714,10 @@ it cannot be abused as an open relay to the rest of the upstream API.
   provider's credentials are set. The account is found by the provider's own stable id, so a renamed
   login or a reassigned address cannot hand somebody else's account over, and a first sign-in never
   takes a username that is already in use.
+- **Ceilings, not queues** — the routes that cost something are limited per address and per account,
+  in memory for this instance and in the database across all of them, with a rolling 24-hour spending
+  budget read straight off the usage ledger. A refusal is a `429` with `Retry-After` and a sentence
+  naming what ran out. See [Anti-abuse](#anti-abuse).
 - **Chat history** in `localStorage`, grouped by day, searchable, and namespaced per user account.
 - **File attachments** — attach source files, or paste more than 3000 characters, and the text is
   sent as a fenced block with its filename. An attachment alone is a complete message: with the box
@@ -617,22 +751,28 @@ button. It holds three groups, and nothing in it is a server setting: the choice
 browser under `devchat.look.v1`, so another device stays on the defaults and the account list never
 sees any of it.
 
-- **Background** — *Aurora* (what the site ships with), *Grid*, *Plain*, or *Picture*: an `https`
-  address of your own plus a **Dim for reading** slider. The picture is fetched by your browser,
-  never by this server, so it costs the deployment nothing and needs no upload. The address is
-  checked before it is used: `https` only, and a character that could break out of the CSS
-  `url("…")` it ends up inside makes the whole value be refused. `theme.js` applies the choice
-  before the first paint, so a saved backdrop does not flash in as the aurora.
+- **Background** — *Aurora* (what the site ships with), *Grid*, *Plain*, or *Picture*. A picture is
+  yours, in one of two ways: an `https` address, or **From this device**, which reads a file you
+  pick, shrinks it to 1440 px and re-encodes it as a JPEG on a canvas, then keeps that as the
+  backdrop. Both stay inside your browser — nothing is fetched or uploaded by this server — and a
+  typed address wins over a kept file, so clearing the box brings the file back. Every value is
+  checked before it is used, because it ends up inside a CSS `url("…")`: the address must be `https`
+  with no character that could break out of it, and a stored file must be a base64 image of a listed
+  mime type under one million characters. `theme.js` applies the choice before the first paint, so a
+  saved backdrop does not flash in as the aurora. **Dim for reading** puts a scrim of the page's own
+  background colour over whichever picture is showing, so text keeps the contrast it has elsewhere.
 - **Ambient sound** — *Drone*, *Rain*, *Keys*, or *Your file*, with a level slider.
 - **Interface sounds** — a tick on buttons, a short whoosh as a message goes out, a two-note chime
   when an answer lands, a low pair of tones when the request fails. One checkbox turns all of them
   off, and a level slider sets how loud.
 
 No audio file is shipped with the site. Every sound is synthesised in the browser with WebAudio,
-which is why there is nothing to licence, nothing to download, and no `media-src` exception to add to
-the Content-Security-Policy. *Your file* is the one exception: a track you pick is decoded and played
-locally for that visit, is never uploaded anywhere, and has to be chosen again after a reload — the
-page only remembers that you wanted it.
+which is why there is nothing to licence and nothing to download. Two things do come from the
+visitor's own disk, and neither of them leaves it: a track picked under *Your file* is decoded
+and played locally for that visit only, and has to be chosen again after a reload — the
+page only remembers that you wanted it. A picture picked under *Picture* is re-encoded first, and is
+the one file that does survive a reload. Spoken answers from the studio are why `media-src` carries
+`blob:`.
 
 Browsers refuse to let a page make sound before you have interacted with it, so an ambient bed starts
 on your first click or keypress rather than on load, and *Keys* stays quiet while the tab is in the
@@ -650,6 +790,7 @@ lib/
   auth.js              scrypt, sessions, key vault (AES-256-GCM), first-run admin
   oauth.js             Google and GitHub: endpoints, PKCE, the code → profile exchange
   guard.js             lockout ladder, password policy, step-up and audit rules
+  limits.js            per-address and per-account ceilings, durable windows, in-flight slots
   env.js               .env reader, shared by the server and the scripts
   net.js               LAN addresses for `npm run host`, firewall command
   http.js              JSON body reader with size limits, cookie and error helpers
@@ -675,6 +816,8 @@ public/
   theme.js             sets the theme and the chosen backdrop before first paint (no inline script)
   watchdog.js          inspector and automation deterrent, reports to /api/guard/event
   styles.css
+  logo.jpg             the brand artwork as supplied — it carries its own "Vibe coding ai" wordmark
+  logo-mark.jpg        the brain cropped square out of it: favicon, sidebar and every page header
   zip.js               dependency-free ZIP writer (store method)
   vendor/              marked, DOMPurify, highlight.js + theme (no CDN at runtime)
 data/                  devchat.db + master.key — git-ignored, delete to reset

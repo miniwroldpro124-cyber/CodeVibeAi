@@ -863,7 +863,6 @@ html[data-theme="light"] .md code:not(pre code) { color: #0a6e64; }
   display: grid; place-items: center;
   border-radius: 22px;
   background: var(--grad);
-  color: #04201c;
   box-shadow: 0 20px 44px -18px color-mix(in srgb, var(--accent) 75%, transparent), var(--elev);
   animation: float 6s var(--ease) infinite;
 }
@@ -873,8 +872,8 @@ html[data-theme="light"] .md code:not(pre code) { color: #0a6e64; }
   background: var(--grad-h);
   opacity: .18; filter: blur(16px); z-index: -1;
 }
+.empty-logo img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit; }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
-.empty-logo svg { width: 40px; height: 40px; stroke-width: 2.4; }
 .empty h1 {
   margin: 0 0 8px; font-size: clamp(30px, 5vw, 42px); font-weight: 800; letter-spacing: -.035em;
   background: linear-gradient(120deg, var(--text) 20%, color-mix(in srgb, var(--accent) 85%, var(--text)) 55%, color-mix(in srgb, var(--accent-2) 85%, var(--text)));
@@ -1159,9 +1158,9 @@ html.ov-open, html.ov-open body { overflow: hidden; }
 }
 @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.97); } }
 .ov-logo { display: grid; place-items: center; margin-bottom: 16px; }
-.ov-logo svg {
-  width: 46px; height: 46px; color: var(--accent);
-  filter: drop-shadow(0 8px 20px color-mix(in srgb, var(--accent) 55%, transparent));
+.ov-logo img {
+  width: 52px; height: 52px; display: block; border-radius: 17px;
+  box-shadow: 0 12px 30px -14px color-mix(in srgb, var(--accent) 70%, transparent), var(--elev);
 }
 .ov-pane h1 { margin: 0 0 6px; font-size: 22px; text-align: center; letter-spacing: -.02em; font-weight: 750; }
 .ov-sub { margin: 0 0 18px; font-size: 13px; line-height: 1.6; color: var(--muted); text-align: center; }
@@ -1224,27 +1223,51 @@ html.ov-open, html.ov-open body { overflow: hidden; }
 .ov-link { font-size: 12.5px; color: var(--muted); text-decoration: underline; padding: 6px; border-radius: 6px; }
 .ov-link:hover { color: var(--accent); }
 
-/* Sign-in with a provider: the same card, one step shorter. */
-.ov-oauth { display: grid; gap: 11px; margin-top: 16px; }
+/* Sign in with a provider: the card's first option, not its afterthought. The two
+   brands keep their own hover colour so they do not read as one generic external
+   login, and the arrow only arrives on hover or keyboard focus. */
+.ov-oauth { display: grid; gap: 10px; margin-bottom: 16px; }
 .ov-oauth[hidden] { display: none; }
+.ov-providers { display: grid; gap: 9px; }
+.ov-provider {
+  display: flex; align-items: center; gap: 11px;
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--bg-soft); border: 1px solid var(--border);
+  color: var(--text); font-size: 13.5px; font-weight: 600; text-align: left;
+  transition: border-color .16s var(--ease), background .16s, box-shadow .18s, transform .16s var(--ease-out);
+}
+.ov-provider:hover { border-color: var(--muted); background: var(--panel-solid); transform: translateY(-1px); }
+.ov-provider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ov-mark { display: grid; place-items: center; width: 20px; height: 20px; flex: none; }
+.ov-provider svg { width: 19px; height: 19px; stroke: none; }
+.ov-provider::after {
+  content: "\2192"; margin-left: auto; font-family: var(--mono); font-size: 15px;
+  opacity: 0; transform: translateX(-5px);
+  transition: opacity .16s var(--ease), transform .18s var(--ease-out);
+}
+.ov-provider:hover::after, .ov-provider:focus-visible::after { opacity: .5; transform: none; }
+.ov-provider[data-oauth-provider="google"]:hover {
+  border-color: #4285f4;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #4285f4 16%, transparent);
+}
+.ov-provider[data-oauth-provider="github"]:hover {
+  border-color: color-mix(in srgb, var(--text) 52%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 11%, transparent);
+}
+.ov-provider:disabled { opacity: .6; cursor: progress; transform: none; }
+/* The one you pressed, while the browser is somewhere else. */
+.ov-provider[data-busy] {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .ov-or {
-  display: flex; align-items: center; gap: 10px; margin: 0;
+  display: flex; align-items: center; gap: 10px; margin: 2px 0 0;
   font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--muted);
 }
 .ov-or::before, .ov-or::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
-.ov-providers { display: grid; gap: 9px; }
-.ov-provider {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  padding: 11px 12px; border-radius: var(--radius-sm);
-  background: var(--panel-solid); border: 1px solid var(--border);
-  color: var(--text); font-size: 13.5px; font-weight: 600;
-  transition: border-color .16s var(--ease), background .16s, transform .16s var(--ease-out);
-}
-.ov-provider:hover { border-color: var(--muted); background: var(--bg-soft); transform: translateY(-1px); }
-.ov-provider:disabled { opacity: .6; cursor: progress; transform: none; }
-.ov-provider svg { width: 18px; height: 18px; flex: none; }
-.ov-oauth .ov-note { text-align: left; margin-top: 2px; }
+.ov-oauth .ov-privnote { text-align: left; margin: 0; }
 .ov-foot {
   display: flex; align-items: center; justify-content: center; gap: 9px;
   margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border-soft);
@@ -1269,12 +1292,17 @@ html.ov-open, html.ov-open body { overflow: hidden; }
 .spacer { flex: 1; }
 .page-logo {
   display: grid; place-items: center; width: 34px; height: 34px; flex: none;
-  border-radius: 11px; background: var(--grad); color: #05201d; text-decoration: none;
+  border-radius: 11px; background: var(--grad); text-decoration: none;
   box-shadow: 0 8px 20px -12px color-mix(in srgb, var(--accent) 90%, transparent), var(--elev);
   transition: transform .26s var(--ease-spring);
 }
 .page-logo:hover { transform: rotate(-8deg) scale(1.06); }
-.page-logo svg { width: 19px; height: 19px; stroke-width: 2.4; }
+/* /logo-mark.jpg is already the brain cropped square out of the artwork, so these boxes
+   need no crop of their own — the wordmark original would be unreadable at 34 pixels. */
+.brand-mark img, .page-logo img {
+  width: 100%; height: 100%; display: block;
+  object-fit: cover; border-radius: inherit;
+}
 .page-nav { display: flex; gap: 6px; align-items: center; }
 .page-nav a, .page-nav button {
   padding: 7px 13px; border-radius: 999px; font-size: 12.5px; font-weight: 550;
@@ -1470,6 +1498,42 @@ table.data .empty-row td { text-align: center; color: var(--muted); padding: 24p
 .studio-prompt textarea:focus { border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .studio-actions { align-items: center; margin-top: 4px; }
 .studio-note { margin: 12px 0 0; }
+.studio-polish { align-items: center; gap: 10px; margin: -4px 0 10px; }
+.studio-polish .sp-note { flex: 1; min-width: 200px; }
+
+/* The file picker is the one input whose look belongs to the browser, so it is
+   kept as a plain field and the label carries the weight instead. */
+.field input[type="file"] { padding: 8px 9px; font-size: 12px; cursor: pointer; }
+.field input[type="file"]::file-selector-button {
+  margin-right: 9px; padding: 5px 11px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--panel-2); color: var(--text-soft);
+  font: 600 11.5px var(--sans); cursor: pointer;
+}
+
+/* The picture that is about to be sent, shown at a size that proves the resize
+   worked — the file the user picked and the bytes the model receives differ. */
+.picture-preview {
+  display: flex; gap: 11px; align-items: center; margin: 12px 0 0;
+  padding: 10px 11px; border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); background: var(--panel-2);
+}
+.picture-preview[hidden] { display: none; }
+.picture-preview img {
+  width: 62px; height: 62px; object-fit: cover; border-radius: 8px;
+  border: 1px solid var(--border-soft); background: var(--code-bg); flex: none;
+}
+.picture-preview .preview-meta { font-size: 11.5px; color: var(--muted); line-height: 1.5; word-break: break-word; }
+
+/* An edit spends money on a model the price ceiling does not cover, so the number
+   is stated here and a second click is what releases the request. */
+.confirm-row {
+  display: grid; gap: 11px; margin-top: 12px; padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-2));
+}
+.confirm-row[hidden] { display: none; }
+.confirm-row .card-sub { margin: 0; text-align: left; }
 
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 14px; }
 .shot { margin: 0; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; background: var(--panel-2); }
@@ -1481,6 +1545,7 @@ table.data .empty-row td { text-align: center; color: var(--muted); padding: 24p
 
 .clip { display: grid; gap: 10px; }
 .clip-player { display: block; width: 100%; max-height: 62vh; border-radius: var(--radius-sm); background: #000; border: 1px solid var(--border-soft); }
+.clip audio { width: 100%; }
 
 /* ---------- coder setup ---------- */
 
@@ -1586,6 +1651,8 @@ table.data td.wrap { white-space: normal; min-width: 300px; line-height: 1.5; co
   display: grid; gap: 10px;
   padding: 11px; border: 1px dashed var(--border); border-radius: var(--radius-sm);
 }
+.lf-file { display: flex; flex-wrap: wrap; gap: 6px; }
+.lf-file .btn { font-size: 12.5px; padding: 6px 11px; }
 .lf-field, .lf-slider { display: grid; gap: 6px; }
 .lf-field > span, .lf-slider > span {
   font-size: 10.5px; font-weight: 650; letter-spacing: .05em;
