@@ -82,8 +82,9 @@ window.Auth = (() => {
     } catch {
       data = null;
     }
-    if (!res.ok && (!data || typeof data !== 'object' || !data.error)) {
-      data = { error: describeFailure(res, text, path) };
+    const envelope = data && typeof data === 'object' && typeof data.error === 'string';
+    if (!res.ok && !envelope) {
+      data = { error: describeFailure(res, path) };
     }
     // The server only returns a token when it saw a cross-origin request; the
     // cookie path leaves it out and nothing here changes.
@@ -91,18 +92,21 @@ window.Auth = (() => {
     return { ok: res.ok, status: res.status, data: data || {} };
   }
 
-  // A CDN, a missing serverless function or a rewrite that never reached the API
-  // all answer with an HTML page. Rendering that as "Request failed (404)" throws
-  // away the only diagnosis the user can act on.
-  function describeFailure(res, text, path) {
-    const type = res.headers.get('content-type') || '';
-    const html = /^\s*</.test(text) || type.includes('text/html');
-    const where = API_ROOT || location.origin;
-    if (html && (res.status === 404 || res.status === 405)) {
-      return `No DevChat server is answering at ${where}${path}. That address served an HTML page `
-        + 'instead of the API — set DEVCHAT_API in public/config.js to a running backend.';
+  // A CDN, a static host or a rewrite that never reached the API all answer with
+  // their own error page — and not every one of them is HTML. Rendering that as
+  // "Request failed (404)" throws away the only diagnosis the user can act on, so
+  // anything that is not our own {error} envelope gets explained instead.
+  function describeFailure(res, path) {
+    const where = (API_ROOT || location.origin) + path;
+    if (res.status === 404 || res.status === 405) {
+      return `No DevChat API is answering at ${where}. That address is a static host, so it can `
+        + 'serve the page but not the accounts, keys or chat. Run the Node server somewhere with '
+        + 'a disk, put its address in DEVCHAT_API in public/config.js, and add this page’s origin '
+        + 'to that server’s ALLOWED_ORIGINS.';
     }
-    if (html) return `The server replied ${res.status} with a page instead of JSON.`;
+    if (!/json/i.test(res.headers.get('content-type') || '')) {
+      return `The server replied ${res.status} with a page instead of JSON — ${where} is not the DevChat API.`;
+    }
     return `Request failed (${res.status})`;
   }
 
