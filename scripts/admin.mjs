@@ -20,7 +20,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // DATA_DIR from the environment when the module is first evaluated.
 const lib = (name) => import(pathToFileURL(join(ROOT, 'lib', name)).href);
 
-const { loadEnv } = await lib('env.js');
+const { hostedConfigured, loadEnv } = await lib('env.js');
 loadEnv(ROOT);
 
 const { Store, DB_FILE } = await lib('db.js');
@@ -102,7 +102,7 @@ try {
 }
 
 async function openStore() {
-  const hosted = String(process.env.TURSO_URL || '').trim();
+  const hosted = hostedConfigured();
   if (!hosted && !existsSync(DB_FILE)) {
     fail(
       `No database yet at ${DB_FILE}.\n` +

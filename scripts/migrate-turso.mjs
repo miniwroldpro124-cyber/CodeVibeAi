@@ -20,7 +20,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const lib = (name) => import(pathToFileURL(join(ROOT, 'lib', name)).href);
 
-const { loadEnv } = await lib('env.js');
+const { hostedToken, hostedUrl, loadEnv } = await lib('env.js');
 loadEnv(ROOT);
 
 const { Store, DB_FILE } = await lib('db.js');
@@ -36,14 +36,14 @@ const force = args.includes('--force');
 const TABLES = ['users', 'sessions', 'usage_log', 'settings', 'login_guard', 'auth_events'];
 const CHUNK = 50;
 
-const targetUrl = String(process.env.TURSO_URL || '').trim();
-if (!targetUrl) fail('TURSO_URL is not set. Put the hosted database URL and token in .env first.');
+const targetUrl = hostedUrl();
+if (!targetUrl) fail('No hosted database URL found. Set TURSO_URL (or TURSO_DB_URL) and its token in .env first.');
 if (!existsSync(DB_FILE)) fail(`No local database at ${DB_FILE} — nothing to copy.`);
 
 const source = await createLocalDriver(DB_FILE);
 const target = createTursoDriver({
   url: targetUrl,
-  token: String(process.env.TURSO_TOKEN || '').trim(),
+  token: hostedToken(),
   timeoutMs: 30_000
 });
 const targetStore = new Store(target);

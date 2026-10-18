@@ -8,7 +8,7 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadEnv } from '../lib/env.js';
+import { hostedConfigured, loadEnv, visibleTursoVars } from '../lib/env.js';
 import { applySecurityHeaders } from '../lib/security.js';
 import { sendJson } from '../lib/http.js';
 
@@ -39,11 +39,16 @@ function boot() {
 }
 
 async function start() {
-  if (!String(process.env.TURSO_URL || '').trim()) {
+  if (!hostedConfigured()) {
+    // Naming what the function can actually see separates the two ways this
+    // fails: nothing injected, or injected under a name this build ignores.
+    const seen = visibleTursoVars();
     throw new Error(
-      'TURSO_URL is not set, so this function has nowhere to keep accounts. Vercel gives a '
-        + 'request no disk that outlives it. Create a free Turso database, then add TURSO_URL, '
-        + 'TURSO_TOKEN and MASTER_KEY to the Vercel project environment variables and redeploy.'
+      'This function has nowhere to keep accounts: no hosted database is configured, and Vercel '
+        + 'gives a request no disk that outlives it. Create a free Turso database — Vercel '
+        + 'Marketplace → Turso Cloud, or turso.tech — then add TURSO_URL, TURSO_TOKEN and '
+        + 'MASTER_KEY to the project environment variables and redeploy. '
+        + `Variables this deployment can see: ${seen.length ? seen.join(', ') : 'none'}.`
     );
   }
   const { Store } = await import('../lib/db.js');

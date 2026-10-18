@@ -143,9 +143,15 @@ Node function, and a rewrite sends every `/api/…` path to it. One origin means
 `localStorage` token, and no second service to keep alive.
 
 **1. Create a database.** [turso.tech](https://turso.tech) has a free plan (5 GiB storage, 500 M row
-reads and 10 M row writes a month — DevChat reads one session row per request). Choose the region
-nearest your users, then copy the database URL and create an API token. With the
-[CLI](https://github.com/tursodatabase/turso-cli) that is four commands:
+reads and 10 M row writes a month — DevChat reads one session row per request).
+
+The shortest route is Vercel itself: **Project → Settings → Integrations → browse for Turso Cloud**
+installs the integration, which creates the database and injects its own variables. This build reads
+`TURSO_DB_URL` and `TURSO_DB_AUTH_TOKEN` as well as the names below, so a Marketplace database needs
+no renaming — only `MASTER_KEY` is still yours to add.
+
+Otherwise, choose the region nearest your users and take the URL and a token from the database page,
+or with the [CLI](https://github.com/tursodatabase/turso-cli):
 
 ```bash
 turso auth signup                        # or: turso auth login
@@ -155,7 +161,6 @@ turso group tokens create devchat        # paste this as TURSO_TOKEN
 ```
 
 `--http-url` prints the `https://` form instead; either works, the driver converts `libsql://`.
-Signing up in the browser and reading the URL and token off the database page does the same thing.
 
 **2. Move the accounts over** — only if this machine already has a `data/devchat.db` worth keeping.
 Read the master key first, because the new host must decrypt with exactly that key:
@@ -194,6 +199,18 @@ Settings and remove the variable.
 `api/index.js`, and the Routes list must contain a rewrite from `/api/:path*` to `/api/index`. If
 the function is missing, the deployment treated `public/` as the whole project — set Root Directory
 to the repository root (the output directory only says where static files live).
+
+Then check it from a terminal. Variables added in the dashboard reach a function only on the next
+deployment, so an unchanged answer after editing usually means "not redeployed yet", not "wrong
+value":
+
+```bash
+curl -i https://your-app.vercel.app/api/health
+```
+
+`200` with `"users":3` means the API is talking to the hosted database. A `503` names the
+`TURSO_*` variables the function can actually see — none of them means the environment did not
+arrive, and a name that is not `TURSO_URL` means the platform injected one this build does not read.
 
 `public/config.js` keeps `DEVCHAT_API = ''`: same origin, so nothing to point at. Sign in on the
 live URL and the "No server behind this page" pane should be gone.
