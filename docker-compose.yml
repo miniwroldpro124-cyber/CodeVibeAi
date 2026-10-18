@@ -1,0 +1,22 @@
+services:
+  devchat:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Named volume, so the SQLite file and master.key survive redeploys and
+      # `docker compose down`. Losing it locks every user out of their stored key.
+      - devchat-data:/data
+    environment:
+      # The exact origin of the Vercel frontend, no trailing slash.
+      ALLOWED_ORIGINS: https://code-vibe-ai.vercel.app
+      XAH_API_BASE: https://api.xah.io/v1
+      DEFAULT_MODEL: deepseek-v4.1-flash
+      ADMIN_USERNAME: admin
+      # Leave ADMIN_PASSWORD empty to have a random one printed on first start,
+      # or set it once. Fill it in here only if this file is not committed.
+      ADMIN_PASSWORD: ""
+    restart: unless-stopped
+
+volumes:
+  devchat-data:

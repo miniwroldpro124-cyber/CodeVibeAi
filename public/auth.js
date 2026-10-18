@@ -11,17 +11,55 @@ window.Auth = (() => {
   };
   const listeners = new Set();
 
+  const CFG = window.DEVCHAT || { root: '', remote: false, tokenKey: 'devchat.token.v1' };
+  const API_ROOT = CFG.root;
+  const REMOTE = CFG.remote;
+  const TOKEN_KEY = CFG.tokenKey;
+
+  function readToken() {
+    try {
+      return localStorage.getItem(TOKEN_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function writeToken(value) {
+    try {
+      if (value) localStorage.setItem(TOKEN_KEY, value);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch {
+      /* private mode: nothing to clear, and the cookie path still works locally */
+    }
+  }
+
+  function apiUrl(path) {
+    return API_ROOT + path;
+  }
+
+  function authHeaders(extra) {
+    const headers = Object.assign({}, extra);
+    const token = REMOTE ? readToken() : '';
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
   async function api(path, { method = 'GET', body, signal } = {}) {
-    const init = { method, credentials: 'same-origin', signal };
+    const init = {
+      method,
+      signal,
+      credentials: REMOTE ? 'omit' : 'same-origin',
+      headers: authHeaders()
+    };
     if (method !== 'GET' && method !== 'HEAD') {
       // The server rejects a mutating request without a JSON content type,
       // which is also what makes a cross-site form post unable to forge one.
-      init.headers = { 'Content-Type': 'application/json' };
+      init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body === undefined ? {} : body);
     }
     let res;
     try {
-      res = await fetch(path, init);
+      res = await fetch(apiUrl(path), init);
     } catch (err) {
       return { ok: false, status: 0, data: { error: `Cannot reach the server: ${err.message}` } };
     }
@@ -31,6 +69,9 @@ window.Auth = (() => {
     } catch {
       data = null;
     }
+    // The server only returns a token when it saw a cross-origin request; the
+    // cookie path leaves it out and nothing here changes.
+    if (data && data.token) writeToken(data.token);
     return { ok: res.ok, status: res.status, data: data || {} };
   }
 
@@ -52,6 +93,9 @@ window.Auth = (() => {
   async function refresh() {
     const res = await api('/api/me');
     state.user = res.data.user || null;
+    // A token the server no longer knows about would be replayed on every request
+    // for as long as the tab stayed open.
+    if (REMOTE && res.ok && !res.data.user) writeToken('');
     state.disabled = Boolean(res.data.disabled);
     state.markupPercent = Number(res.data.markupPercent) || 0;
     state.priceBookSize = Number(res.data.priceBookSize) || 0;
@@ -296,6 +340,7 @@ window.Auth = (() => {
 
   async function signOut() {
     await api('/api/auth/logout', { method: 'POST' });
+    writeToken('');
     state.user = null;
     state.disabled = false;
     hide();
@@ -353,6 +398,8 @@ window.Auth = (() => {
 
   return {
     api,
+    apiUrl,
+    authHeaders,
     boot,
     guard,
     refresh,

@@ -25,10 +25,21 @@
   function report(kind, detail) {
     if (reported.has(kind)) return;
     reported.add(kind);
+    // Reads config.js rather than Auth, because a guard report must still go out
+    // when the rest of the app has failed to load.
+    const cfg = window.DEVCHAT || { root: '', remote: false, tokenKey: 'devchat.token.v1' };
+    const headers = { 'Content-Type': 'application/json' };
     try {
-      fetch('/api/guard/event', {
+      const token = localStorage.getItem(cfg.tokenKey);
+      if (cfg.remote && token) headers.Authorization = `Bearer ${token}`;
+    } catch {
+      /* private mode: the event is dropped, which is the same as no session */
+    }
+    try {
+      fetch(`${cfg.root}/api/guard/event`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: cfg.remote ? 'omit' : 'same-origin',
+        headers,
         body: JSON.stringify({ kind, detail: String(detail || '').slice(0, 120) })
       }).catch(() => {});
     } catch {

@@ -850,7 +850,7 @@
   async function loadModels() {
     if (!Auth.signedIn) return;
     try {
-      const res = await fetch('/api/models');
+      const res = await fetch(Auth.apiUrl('/api/models'), { headers: Auth.authHeaders() });
       const data = await res.json();
       if (!res.ok) {
         Auth.guard({ status: res.status, data });
@@ -980,9 +980,9 @@
     if (maxTokens > 0) payload.max_tokens = maxTokens;
 
     try {
-      const res = await fetch('/api/chat', {
+      const res = await fetch(Auth.apiUrl('/api/chat'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Auth.authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
         signal: state.controller.signal
       });

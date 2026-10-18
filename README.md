@@ -86,6 +86,8 @@ Settings live in `.env` (copy `.env.example` to start):
 | `ADMIN_REAUTH`          | `sensitive`               | Step-up password prompt: `sensitive`, `always`, or `off`.   |
 | `ADMIN_REAUTH_MINUTES`  | `10`                      | How long a sign-in or confirmation counts as recent (1–240).|
 | `MASTER_KEY`            | —                         | 32 bytes of base64 that decrypt stored keys. Empty means generate `data/master.key`. |
+| `ALLOWED_ORIGINS`       | —                         | Frontend origins allowed to call this API, comma-separated. Only for the split deployment below. |
+| `TRUST_PROXY`           | `0`                       | `1` reads the client address from `X-Forwarded-For`. Set it only behind a proxy you control. |
 
 `XAH_API_KEY` is **no longer used**. Keys belong to the accounts that use them; there is no shared
 server key. If yours is still sitting in `.env` from an earlier version, delete the line.
@@ -114,6 +116,83 @@ both, and a `169.254.*` address means that adapter has no network. Anyone on the
 can reach the sign-up page, so treat a shared instance like an open registration: it is fine at
 home, not fine on a café VLAN. `HOST=0.0.0.0` keeps the loud warning in the log for exactly this
 reason, and `--private` is always one flag away.
+
+## Deploying it
+
+DevChat is one Node process with a SQLite file beside it. A frontend-only host cannot run it:
+there is nothing to execute and `data/` has nowhere to live. Vercel in particular gives a function
+a read-only filesystem that is wiped between cold starts, so `data/master.key` would be
+regenerated on the next request — which does not merely lose the accounts, it makes every stored
+`sk-` key permanently undecryptable.
+
+The split deployment keeps both halves: **`public/` on Vercel's CDN, the API on any host with a
+disk.** The browser then reaches the API directly, which also means a long streaming answer is
+never cut off by a serverless time limit.
+
+### 1. Put the API somewhere with a real volume
+
+`Dockerfile` and `docker-compose.yml` are ready. The compose file mounts a named volume at `/data`,
+and that volume is the whole deployment story — a free tier that restarts the container with an
+empty filesystem is not a host, it is a timer that deletes every account. Railway, Fly.io and a
+small VPS give you a real volume; Render's free web service does not.
+
+```bash
+docker compose up -d --build     # then point a domain and TLS at port 8080
+```
+
+Set in the environment, or in `docker-compose.yml`:
+
+```
+ALLOWED_ORIGINS=https://your-project.vercel.app
+TRUST_PROXY=1
+ADMIN_USERNAME=admin
+```
+
+`TRUST_PROXY=1` makes the app read the client address from `X-Forwarded-For`. Without it every
+visitor is recorded as the proxy's own address, so one person's mistyped password counts against
+the whole service in the login limiter. Set it only when a proxy you control is in front of the
+process — otherwise a client can pick its own IP and step around the limiter.
+
+### 2. Tell the page where the API is
+
+Two files have to agree on the same origin, and each is one line:
+
+| File                | Set                                                                        |
+| ------------------- | -------------------------------------------------------------------------- |
+| `public/config.js`  | `const DEVCHAT_API = 'https://api.your-domain.com'`                        |
+| `vercel.json`       | replace `https://__BACKEND_ORIGIN__` inside the CSP `connect-src` entry    |
+
+Leave `DEVCHAT_API` empty and the app uses the server that delivered the page — that is `npm start`
+and `npm run host`, and it needs neither of the two above. If you edit only one of them the
+browser blocks every request and the UI says `Cannot reach the server`; that is a CSP violation
+rather than a network failure, so read the browser console before debugging the backend.
+
+### 3. Import the repository on Vercel
+
+Framework preset **Other**. `vercel.json` supplies the output directory, the no-op build and the
+security headers. Do not add a rewrite from `/api/*` to the backend — proxying SSE through
+Vercel's edge reintroduces exactly the timeout this layout exists to avoid.
+
+### How you stay signed in
+
+Same-origin (this machine, your LAN) keeps the `HttpOnly` session cookie as always: JavaScript
+cannot read it, so injected code cannot steal it. Across origins a cookie set by the API host is
+third-party storage, which Safari drops outright, so the login response returns the token in JSON
+instead and the page replays it as `Authorization: Bearer`. That token lives in `localStorage`
+where page script can reach it — the honest cost of the split is trading cookie theft for XSS
+theft, and the CSP that forbids inline script is what keeps that trade worth making. Never add
+`'unsafe-inline'` to `script-src` to silence a warning.
+
+Because the credential is a header rather than an ambient cookie, no cross-site request can carry
+it by accident, so the CSRF defence becomes a plain origin allowlist.
+
+### Before you push anything
+
+`data/` and `.env` are git-ignored, but GitHub's **Add files via upload** ignores `.gitignore` and
+ships whatever you drag. If that is how the code got there, open the repository and look for
+`.env`, `data/devchat.db` and `data/master.key`. If any are present, treat the vault as public:
+rotate the `sk-` keys, delete the files along with their history, and switch to `git push` from a
+clone.
 
 ## Accounts and API keys
 
@@ -284,6 +363,7 @@ lib/
   net.js               LAN addresses for `npm run host`, firewall command
   http.js              JSON body reader with size limits, cookie and error helpers
   security.js          the Content-Security-Policy and the other response headers
+  cors.js              the split-deployment origin allowlist and preflight
   routes.js            the /api router: auth, keys, chat, pricing, admin
   pricing.js           price book ingested from the provider, floor and markup maths
   upstream.js          proxy: body whitelist, SSE relay, usage tap
@@ -294,22 +374,29 @@ public/
   index.html  app.js   the chat
   pricing.html pricing.js
   admin.html  admin.js
-  auth.js              sign-in/sign-up overlay and the API-key gate
+  auth.js              sign-in/sign-up overlay, the API-key gate and the session token
   page.js              helpers shared by the pricing and admin pages
+  config.js            which API origin this page talks to ('' = the server that sent it)
   theme.js             sets the theme before first paint (no inline script allowed)
   watchdog.js          inspector and automation deterrent, reports to /api/guard/event
   styles.css
   zip.js               dependency-free ZIP writer (store method)
   vendor/              marked, DOMPurify, highlight.js + theme (no CDN at runtime)
 data/                  devchat.db + master.key — git-ignored, delete to reset
+vercel.json            static hosting of public/ plus the page's security headers
+Dockerfile             the API image; /data is a volume, nothing stateful in the layers
+docker-compose.yml     run the API with a named volume and ALLOWED_ORIGINS
+.dockerignore          keeps data/ and .env out of the image
 ```
 
 ## Notes
 
 - `data/` and `.env` are git-ignored. `data/master.key` decrypts every stored user key; losing it
   means every user pastes their key again, leaking it means pasting it anywhere is unsafe.
-- POSTs are defended by `SameSite=Lax`, an Origin/host match, and a JSON-only content type; an
-  oversized body is refused with `413` before it is buffered.
+- POSTs are defended by a JSON-only content type, an Origin check (same-origin, or the
+  `ALLOWED_ORIGINS` list once split) and, for cookie sessions, `SameSite=Lax`; an oversized body
+  is refused with `413` before it is buffered. A bearer-token session needs none of that, because
+  a cross-site page cannot attach the header.
 - Model output is treated as untrusted: it is sanitised before rendering, and code blocks are
   copied from the raw text rather than the highlighted DOM, so no markup ever leaks into your
   clipboard.
