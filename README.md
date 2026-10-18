@@ -116,6 +116,11 @@ Settings live in `.env` (copy `.env.example` to start):
 | `TURSO_TIMEOUT_MS`      | `10000`                   | How long one database round trip may take.                     |
 | `ALLOWED_ORIGINS`       | —                         | Frontend origins allowed to call this API, comma-separated. Only for layout B below. |
 | `TRUST_PROXY`           | `0`                       | `1` reads the client address from `X-Forwarded-For`. Set it only behind a proxy you control. The Vercel function sets it for you. |
+| `APP_URL`               | —                         | Public origin of this site, no trailing slash. Provider sign-in is built from it; empty means no buttons. |
+| `GOOGLE_CLIENT_ID`      | —                         | OAuth client from Google Cloud Console. Needs its secret *and* `APP_URL`. |
+| `GOOGLE_CLIENT_SECRET`  | —                         | Client secret. A provider with only one half configured is not offered at all. |
+| `GITHUB_CLIENT_ID`      | —                         | OAuth app from GitHub → Developer settings.                    |
+| `GITHUB_CLIENT_SECRET`  | —                         | Its secret.                                                    |
 | `VIDEO_MODELS`          | `MiniMax-H3,MiniMax-H3-Max` | The studio's video list. Comma-separated model ids; needed because `/v1/models` does not contain any video model. |
 | `DEVCHAT_LOCAL_DB`      | —                         | `1` ignores `TURSO_*` and uses the local file database even when this `.env` has a live URL. See "Testing without touching live data". |
 
@@ -232,7 +237,7 @@ Read the master key first, because the new host must decrypt with exactly that k
 ```bash
 npm run admin -- --print-master-key          # the key that unlocks every stored sk-
 npm run migrate:turso -- --dry-run           # shows what would be copied, writes nothing
-npm run migrate:turso                        # users, sessions, usage, settings, guards, audit
+npm run migrate:turso                        # users, sessions, usage, settings, guards, audit, identities
 ```
 
 Put `TURSO_URL`, `TURSO_TOKEN` and `MASTER_KEY` in `.env` for the copy, or pass them inline. The
@@ -258,6 +263,11 @@ DEFAULT_MODEL=deepseek-v4.1-flash
 `ADMIN_PASSWORD` is optional; left empty the first cold start generates one and prints it to the
 function log, which is harder to read than a local console. Set it, sign in, then change it in
 Settings and remove the variable.
+
+`APP_URL` plus a provider's two variables are optional too, and turn on that provider's button —
+`APP_URL` has to be the address Vercel actually serves (`https://<project>.vercel.app`, or your own
+domain) because the callback registered with the provider is built from it. See
+[Sign in with Google or GitHub](#sign-in-with-google-or-github).
 
 **4. Push.** In the Vercel build log, check two lines: the Functions list must contain
 `api/index.js`, and the Routes list must contain a rewrite from `/api/:path*` to `/api/index`. If
@@ -353,7 +363,7 @@ clone.
 ## Accounts and API keys
 
 - Sign-up is open: username (3–32 characters: letters, numbers, `.` `-` `_`) and a password of at
-  least 8 characters.
+  least 8 characters — or a Google or GitHub account, if the deployment has credentials for one.
 - Sessions are random 32-byte tokens, stored only as a SHA-256 hash, delivered in an `httpOnly`,
   `SameSite=Lax` cookie, and valid for 30 days. Changing or resetting a password signs that user
   out everywhere.
@@ -364,7 +374,78 @@ clone.
   *"The provider rejected this key"* instead of failing on the first message.
 - Admins can disable an account (instant lockout on every request, not just the login form),
   promote or demote, reset a password, and delete a user — deleting cascades to that user's
-  sessions, stored key and usage rows.
+  sessions, stored key, usage rows and provider identities.
+
+## Sign in with Google or GitHub
+
+Optional, and separately optional per provider. With `APP_URL` empty, or a provider missing either
+half of its credentials, its button is not rendered and username-and-password sign-in behaves exactly
+as it always did. `/api/health` answers `"oauth":["google","github"]` for what an instance actually
+offers, so the wiring can be checked without a browser.
+
+**Register the app.** Each console wants one callback URL, and that URL is built from `APP_URL`, so
+register it against the address people really open — `https://your-app.vercel.app` in production,
+`http://127.0.0.1:5173` on your own machine:
+
+```
+https://your-app.vercel.app/api/auth/oauth/google/callback
+https://your-app.vercel.app/api/auth/oauth/github/callback
+```
+
+- **Google**: Cloud Console → APIs & Services → Credentials → *Create OAuth client ID → Web
+  application*, then add the URI under *Authorized redirect URIs*. The consent screen has to be
+  **Published**, or your own address added as a test user, or Google interposes its
+  "app isn't verified" page first.
+- **GitHub**: Settings → Developer settings → *Developer OAuth Apps* → new application, and the URI
+  goes in *Authorization callback URL*.
+
+Both providers accept a plain `http://127.0.0.1` callback, so local testing needs no tunnel.
+
+**What an account created by a provider looks like.** The identity stored is the provider's own
+stable id — Google's `sub`, GitHub's numeric `id` — never the email and never the username, because
+an address can be reassigned and a GitHub login renamed while a subject cannot. The first sign-in
+creates the account with a password of 32 random bytes that is hashed and immediately discarded, so
+there is nothing to guess: `/api/auth/login` answers that account the same way it answers any wrong
+password, until someone sets one. A provider name that is already taken gets a suffix (`ada` →
+`ada1`) rather than being handed the account that owns it.
+
+The key is unaffected: it still lives on the account, still encrypted with `MASTER_KEY`, still never
+returned to the browser, and the provider is never told it exists.
+
+**The handshake.** `GET /api/auth/oauth/<provider>` sends the browser to the provider with a random
+`state` (plus a PKCE verifier for Google; GitHub's confidential-client exchange has no PKCE, and
+inventing one there is a second way to get it wrong). Both are sealed into one short cookie —
+AES-256-GCM under the same `MASTER_KEY` that guards the key vault, `HttpOnly`, `SameSite=Lax`,
+`Path=/api/auth/oauth`, 10 minutes — rather than kept in process memory or a database row, because a
+serverless begin and its callback usually land on different instances and must still be able to
+finish the same handshake.
+
+`GET /api/auth/oauth/<provider>/callback` spends that cookie before anything else, which is what makes
+a callback unusable twice, then checks `state`, exchanges the code, and reads the profile. Anything
+that goes wrong comes back to `/` with one of seven fixed words
+(`?oauth=cancelled`, `incomplete`, `tampered`, `expired`, `mismatch`, `provider`, `disabled`) and the
+page shows the matching sentence, so a provider cannot put its own text in front of a user. Begins are
+throttled to 15 per 10 minutes per address and callbacks to 30, and every step is recorded in the audit
+trail under its own kind — `oauth_begin`, `oauth_cancel`, `oauth_fail`, `oauth_signup`, `oauth_login`,
+`oauth_disabled` — like any other sign-in.
+
+Same-origin deploys finish by setting the session cookie and landing on `/`. A split deploy (layout B)
+cannot rely on a third-party cookie, so the callback returns the session in the URL fragment
+(`#devchat_oauth=<token>`); the page writes it to `localStorage` and erases it from the address bar in
+the same tick. A fragment is never sent to a server, so it stays out of access logs.
+
+**No migration step.** `identities` is created by the same `CREATE TABLE IF NOT EXISTS` pass that runs
+on every cold start, and it only *adds* a table — no existing column is touched — so a live database
+picks it up on the next deployment. `npm run migrate:turso` copies it along with the rest.
+
+**Testing it without Google or GitHub.** `npm run test:ui` shows both buttons against
+[.smoketest/fake-oauth.mjs](.smoketest/fake-oauth.mjs), and `node .smoketest/hosted-run.mjs` walks the
+whole flow there — both providers, a hidden GitHub address, a taken username, a mismatched `state`, a
+replayed callback and a disabled account. The stand-in is stricter than most: a code is single-use, the
+token call must present a verifier whose S256 matches the challenge it was issued with, and the profile
+is returned only for a token that server handed out. `OAUTH_<PROVIDER>_<ENDPOINT>_URL` is what points
+[lib/oauth.js](lib/oauth.js) at it; never set those in production, since they would send real sign-ins
+wherever you typed.
 
 ## Admin account protection
 
@@ -499,6 +580,10 @@ it cannot be abused as an open relay to the rest of the upstream API.
   Claude Code, VS Code, Codex, Droid, OpenCode and OpenClaw, with this deployment's base URL already
   filled in (root for Claude Code, `/v1` for everything OpenAI-shaped) and the key left as a
   placeholder, since a stored key never comes back to the browser.
+- **Sign in with Google or GitHub** — optional, per provider, and the button only exists once that
+  provider's credentials are set. The account is found by the provider's own stable id, so a renamed
+  login or a reassigned address cannot hand somebody else's account over, and a first sign-in never
+  takes a username that is already in use.
 - **Chat history** in `localStorage`, grouped by day, searchable, and namespaced per user account.
 - **File attachments** — attach source files, or paste more than 3000 characters, and the text is
   sent as a fenced block with its filename. An attachment alone is a complete message: with the box
@@ -533,6 +618,7 @@ lib/
   driver-local.js      file-backed SQLite: WAL, foreign keys ON, busy timeout
   driver-turso.js      hosted libSQL over /v2/pipeline, no dependency
   auth.js              scrypt, sessions, key vault (AES-256-GCM), first-run admin
+  oauth.js             Google and GitHub: endpoints, PKCE, the code → profile exchange
   guard.js             lockout ladder, password policy, step-up and audit rules
   env.js               .env reader, shared by the server and the scripts
   net.js               LAN addresses for `npm run host`, firewall command

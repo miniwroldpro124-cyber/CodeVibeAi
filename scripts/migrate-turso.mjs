@@ -33,7 +33,7 @@ const force = args.includes('--force');
 
 // Users first: every other table references it, and a per-request hosted
 // connection cannot be told to defer foreign keys.
-const TABLES = ['users', 'sessions', 'usage_log', 'settings', 'login_guard', 'auth_events'];
+const TABLES = ['users', 'sessions', 'usage_log', 'settings', 'login_guard', 'auth_events', 'identities'];
 const CHUNK = 50;
 
 const targetUrl = hostedUrl();
@@ -67,7 +67,13 @@ console.log('');
 
 let total = 0;
 for (const table of TABLES) {
-  const rows = await source.all(`SELECT * FROM ${table}`);
+  // A database last opened before provider sign-in existed has no identities table,
+  // and that has to read as an empty table rather than killing the whole copy.
+  const present = await source.get(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [table]
+  );
+  const rows = present ? await source.all(`SELECT * FROM ${table}`) : [];
   if (!dryRun && rows.length) {
     const columns = Object.keys(rows[0]);
     const placeholders = columns.map(() => '?').join(', ');

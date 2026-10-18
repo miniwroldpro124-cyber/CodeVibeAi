@@ -73,6 +73,24 @@ function pathnameOf(req) {
   return fromUrl.startsWith('/api/') ? fromUrl : '/api/index';
 }
 
+// The query string is dropped by the same rewrite, and an OAuth callback is
+// nothing *but* a query string: `?code=…&state=…`. Read it from req.url when the
+// platform kept it there, and otherwise rebuild it from the parsed `req.query`
+// minus the `path` capture, so a handler never sees a request that arrived with
+// its parameters silently missing.
+function searchOf(req) {
+  const raw = String(req.url || '');
+  const at = raw.indexOf('?');
+  if (at >= 0 && raw.length > at + 1) return raw.slice(at);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query || {})) {
+    if (key === 'path') continue;
+    for (const one of Array.isArray(value) ? value : [value]) params.append(key, String(one));
+  }
+  const built = params.toString();
+  return built ? `?${built}` : '';
+}
+
 export default async function handler(req, res) {
   applySecurityHeaders(res);
 
@@ -85,7 +103,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const url = new URL(pathnameOf(req), `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(pathnameOf(req) + searchOf(req), `http://${req.headers.host || 'localhost'}`);
   try {
     if (!(await handleApi(req, res, url))) sendJson(res, 404, { error: 'Not found' });
   } catch (err) {

@@ -8,6 +8,7 @@ window.Auth = (() => {
     apiError: '',
     markupPercent: 20,
     priceBookSize: 0,
+    oauth: [],
     ready: false
   };
   const listeners = new Set();
@@ -36,6 +37,41 @@ window.Auth = (() => {
 
   function apiUrl(path) {
     return API_ROOT + path;
+  }
+
+  // A split deployment cannot hand a finished sign-in over as a cookie — page and
+  // API are different sites there, and Safari drops third-party cookies — so the
+  // callback returns the session in the URL fragment instead. A fragment is never
+  // sent to the server, so it stays out of access logs, and this wipes it from the
+  // address bar the moment it has been read.
+  function takeFragmentToken() {
+    const mark = '#devchat_oauth=';
+    if (!location.hash.startsWith(mark)) return;
+    writeToken(decodeURIComponent(location.hash.slice(mark.length)));
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+
+  // The callback only ever redirects back with one of these fixed words, so a
+  // provider cannot put its own sentence in front of the user.
+  const OAUTH_NOTICES = {
+    cancelled: 'That sign-in was cancelled.',
+    incomplete: 'The provider sent back an incomplete answer. Try again.',
+    tampered: 'That sign-in did not start in this browser. Try again.',
+    expired: 'That sign-in took too long. Try again.',
+    mismatch: 'That sign-in was started somewhere else. Try again.',
+    provider: 'The provider refused the sign-in. Try again, or use your password.',
+    disabled: 'This account has been disabled. Ask an administrator to re-enable it.'
+  };
+  let oauthNotice = '';
+
+  function takeOauthNotice() {
+    const params = new URLSearchParams(location.search);
+    const reason = params.get('oauth');
+    if (!reason) return;
+    params.delete('oauth');
+    const query = params.toString();
+    history.replaceState(null, '', location.pathname + (query ? `?${query}` : ''));
+    oauthNotice = OAUTH_NOTICES[reason] || 'Sign-in did not complete. Try again.';
   }
 
   function authHeaders(extra) {
@@ -140,6 +176,7 @@ window.Auth = (() => {
     state.disabled = Boolean(res.data.disabled);
     state.markupPercent = Number(res.data.markupPercent) || 0;
     state.priceBookSize = Number(res.data.priceBookSize) || 0;
+    state.oauth = Array.isArray(res.data.oauth) ? res.data.oauth.filter((p) => p === 'google' || p === 'github') : [];
     state.ready = true;
     return state.user;
   }
@@ -155,6 +192,7 @@ window.Auth = (() => {
   <div class="ov-pane" data-pane="auth">
     <h1 id="ovTitle">Sign in to DevChat</h1>
     <p class="ov-sub">Your chats, your model list and your spend all live behind an account.</p>
+    <p class="ov-notice" data-oauth-notice hidden></p>
 
     <div class="ov-tabs" role="tablist">
       <button type="button" class="ov-tab is-on" data-mode="login" role="tab">Sign in</button>
@@ -177,6 +215,15 @@ window.Auth = (() => {
         <span data-submit-label>Sign in</span>
       </button>
     </form>
+
+    <div class="ov-oauth" data-oauth hidden>
+      <p class="ov-or"><span>or</span></p>
+      <div class="ov-providers" data-oauth-buttons></div>
+      <p class="ov-note">
+        The provider only ever gets a username and an address to sign you in. Your <code>sk-</code>
+        key is still yours to paste, and still nothing else can read it.
+      </p>
+    </div>
     <p class="ov-note">Open sign-up. No email, no invite code.</p>
   </div>
 
@@ -231,6 +278,39 @@ window.Auth = (() => {
   let mode = 'login';
   let afterAuth = null;
 
+  // Both marks are the providers' own published shapes, drawn inline because a
+  // logo fetched from the provider would be a third party on the login screen —
+  // and a request that tells them somebody is about to sign in.
+  const PROVIDER_MARKS = {
+    google: `<svg viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 4.18C12.43 13.24 17.88 9.5 24 9.5z"/>
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.28-3.14.76-4.59l-7.98-4.18C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.55 10.78l7.98-4.19z"/>
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.12 0-11.57-3.74-13.47-9.06l-7.98 4.18C6.51 42.62 14.62 48 24 48z"/>
+    </svg>`,
+    github: `<svg viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+    </svg>`
+  };
+
+  const PROVIDER_LABELS = { google: 'Continue with Google', github: 'Continue with GitHub' };
+
+  function renderOauth() {
+    const el = ensureOverlay();
+    const box = el.querySelector('[data-oauth]');
+    const buttons = el.querySelector('[data-oauth-buttons]');
+    buttons.textContent = '';
+    box.hidden = state.oauth.length === 0;
+    for (const provider of state.oauth) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ov-provider';
+      button.dataset.oauthProvider = provider;
+      button.innerHTML = `${PROVIDER_MARKS[provider]}<span>${PROVIDER_LABELS[provider]}</span>`;
+      buttons.append(button);
+    }
+  }
+
   function ensureOverlay() {
     if (overlayEl) return overlayEl;
     overlayEl = document.createElement('div');
@@ -246,6 +326,19 @@ window.Auth = (() => {
   function pane(name) {
     const el = ensureOverlay();
     for (const p of el.querySelectorAll('[data-pane]')) p.hidden = p.dataset.pane !== name;
+    if (name === 'auth') {
+      renderOauth();
+      // A failed callback lands on the plain page, so the reason has to turn up in
+      // the pane that appears next — which is this one. It gets its own line rather
+      // than the form's error box, because a later showSignIn() from any 401 (the
+      // model list loading right after this) wipes that box.
+      if (oauthNotice) {
+        const note = el.querySelector('[data-oauth-notice]');
+        note.textContent = oauthNotice;
+        note.hidden = false;
+        oauthNotice = '';
+      }
+    }
     const foot = el.querySelector('.ov-foot');
     // Sign-out is meaningless without a session, and so is a pricing link when
     // the page cannot reach the server that prices anything.
@@ -352,6 +445,17 @@ window.Auth = (() => {
     });
 
     el.addEventListener('click', (event) => {
+      const provider = event.target.closest('[data-oauth-provider]');
+      if (provider) {
+        // A top-level navigation, not a fetch: the provider has to show its own
+        // page in the browser, and nothing about the token ever passes through
+        // JavaScript on the way back.
+        for (const button of el.querySelectorAll('[data-oauth-provider]')) button.disabled = true;
+        setError(el.querySelector('[data-form="auth"]'), '');
+        el.querySelector('[data-oauth-notice]').hidden = true;
+        location.assign(apiUrl(`/api/auth/oauth/${provider.dataset.oauthProvider}`));
+        return;
+      }
       const trigger = event.target.closest('[data-act]');
       if (!trigger) return;
       if (trigger.dataset.act === 'retry') {
@@ -418,6 +522,8 @@ window.Auth = (() => {
    * listener then handles sign-in, sign-out and an expired session.
    */
   async function boot({ requireKey = false } = {}) {
+    takeFragmentToken();
+    takeOauthNotice();
     await refresh();
 
     if (state.apiError && !state.user) {

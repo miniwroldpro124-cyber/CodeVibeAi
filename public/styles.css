@@ -1126,6 +1126,16 @@ html.ov-open, html.ov-open body { overflow: hidden; }
 .ov-sub { margin: 0 0 18px; font-size: 13px; line-height: 1.6; color: var(--muted); text-align: center; }
 .ov-sub b { color: var(--text-soft); }
 
+/* Why a provider sign-in came back without one — not a rejection of what the
+   person typed, so it sits above the form instead of inside its error box. */
+.ov-notice {
+  margin: 0 0 14px; padding: 9px 12px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger); font-size: 12.5px; line-height: 1.45; text-align: center;
+}
+.ov-notice[hidden] { display: none; }
+
 .ov-tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 18px; background: var(--bg-soft); border-radius: 999px; border: 1px solid var(--border-soft); }
 .ov-tab { flex: 1; padding: 8px; border-radius: 999px; font-size: 13px; font-weight: 550; color: var(--muted); transition: color .14s, background .16s, box-shadow .16s; }
 .ov-tab:hover { color: var(--text); }
@@ -1172,6 +1182,28 @@ html.ov-open, html.ov-open body { overflow: hidden; }
 .ov-note code { font-family: var(--mono); color: var(--text-soft); }
 .ov-link { font-size: 12.5px; color: var(--muted); text-decoration: underline; padding: 6px; border-radius: 6px; }
 .ov-link:hover { color: var(--accent); }
+
+/* Sign-in with a provider: the same card, one step shorter. */
+.ov-oauth { display: grid; gap: 11px; margin-top: 16px; }
+.ov-oauth[hidden] { display: none; }
+.ov-or {
+  display: flex; align-items: center; gap: 10px; margin: 0;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.ov-or::before, .ov-or::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+.ov-providers { display: grid; gap: 9px; }
+.ov-provider {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 11px 12px; border-radius: var(--radius-sm);
+  background: var(--panel-solid); border: 1px solid var(--border);
+  color: var(--text); font-size: 13.5px; font-weight: 600;
+  transition: border-color .16s var(--ease), background .16s, transform .16s var(--ease-out);
+}
+.ov-provider:hover { border-color: var(--muted); background: var(--bg-soft); transform: translateY(-1px); }
+.ov-provider:disabled { opacity: .6; cursor: progress; transform: none; }
+.ov-provider svg { width: 18px; height: 18px; flex: none; }
+.ov-oauth .ov-note { text-align: left; margin-top: 2px; }
 .ov-foot {
   display: flex; align-items: center; justify-content: center; gap: 9px;
   margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border-soft);

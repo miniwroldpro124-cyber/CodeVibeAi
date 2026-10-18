@@ -405,7 +405,14 @@
     cli_password_reset: ['off', 'reset from CLI'],
     devtools_open: ['off', 'devtools opened'],
     automation_detected: ['off', 'automation detected'],
-    guard_removed: ['off', 'guard tampered']
+    guard_removed: ['off', 'guard tampered'],
+    // The provider name arrives in the detail column, so the pill stays short.
+    oauth_begin: ['dim', 'provider sign-in started'],
+    oauth_login: ['ok', 'signed in with a provider'],
+    oauth_signup: ['ok', 'account created by a provider'],
+    oauth_cancel: ['dim', 'provider sign-in cancelled'],
+    oauth_fail: ['off', 'provider exchange failed'],
+    oauth_disabled: ['off', 'disabled provider account']
   };
 
   function eventPill(kind) {
