@@ -144,7 +144,18 @@ Node function, and a rewrite sends every `/api/…` path to it. One origin means
 
 **1. Create a database.** [turso.tech](https://turso.tech) has a free plan (5 GiB storage, 500 M row
 reads and 10 M row writes a month — DevChat reads one session row per request). Choose the region
-nearest your users, then copy the database URL and create an API token.
+nearest your users, then copy the database URL and create an API token. With the
+[CLI](https://github.com/tursodatabase/turso-cli) that is four commands:
+
+```bash
+turso auth signup                        # or: turso auth login
+turso db create devchat                  # also creates the group it belongs to
+turso db show devchat --url              # libsql://devchat-<yourname>.turso.io
+turso group tokens create devchat        # paste this as TURSO_TOKEN
+```
+
+`--http-url` prints the `https://` form instead; either works, the driver converts `libsql://`.
+Signing up in the browser and reading the URL and token off the database page does the same thing.
 
 **2. Move the accounts over** — only if this machine already has a `data/devchat.db` worth keeping.
 Read the master key first, because the new host must decrypt with exactly that key:
@@ -158,6 +169,11 @@ npm run migrate:turso                        # users, sessions, usage, settings,
 Put `TURSO_URL`, `TURSO_TOKEN` and `MASTER_KEY` in `.env` for the copy, or pass them inline. The
 script refuses a target that already has accounts, because merging two id sequences produces
 collisions; `--force` overrides that if you know why.
+
+Keep those three values in your local `.env` afterwards too. A `npm start` that points at
+`data/devchat.db` while the deployed site points at Turso is two databases that drift apart from
+the first signup — accounts created on one are invisible to the other, and neither can be promoted
+into the other without a second copy.
 
 **3. Set the environment in Vercel** — Project → Settings → Environment Variables (Production at
 minimum, Preview if you want both to work):
