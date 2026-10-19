@@ -208,6 +208,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .app.collapsed { grid-template-columns: 0 minmax(0, 1fr); }
 
 .main {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -558,13 +559,22 @@ html[data-theme="light"] .i-moon { display: none; }
 
 /* ---------- messages ---------- */
 
-.messages { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+/* Smooth scrolling is deliberately not a rule here: sticking to the bottom
+   during a stream writes scrollTop dozens of times a minute, and an animated
+   scroll restarts instead of completing, which is what made long chats crawl.
+   The jump rail passes behavior:'smooth' on the one scroll a visitor asks for. */
+.messages { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .messages-inner { max-width: 900px; margin: 0 auto; padding: 26px 22px 14px; }
 
 .msg {
   display: flex; gap: 14px;
   padding: 16px 0;
   animation: rise .3s var(--ease-out);
+  /* Turns that are off screen keep their last measured height but skip layout
+     and painting, so a 300-message thread costs the same to scroll as ten. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
+  scroll-margin: 14px 0;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
 
@@ -600,16 +610,81 @@ html[data-theme="light"] .i-moon { display: none; }
 }
 .msg-time { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 
-.msg.user .msg-body { display: flex; flex-direction: column; }
+/* Your turns hug the right, answers the left, and the avatar travels with the
+   bubble, so a long thread stays readable without reading the name every time. */
+.msg.user { flex-direction: row-reverse; }
+.msg.user .msg-meta { justify-content: flex-end; }
+.msg.user .msg-body { display: flex; flex-direction: column; align-items: flex-end; }
 .msg.user .md {
   white-space: pre-wrap;
-  align-self: flex-start;
-  max-width: 100%;
+  align-self: flex-end;
+  max-width: min(100%, 680px);
   padding: 10px 14px;
-  border-radius: var(--radius) var(--radius) var(--radius) 4px;
+  border-radius: var(--radius) var(--radius) 4px var(--radius);
   background: var(--user-bubble);
   border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
 }
+
+/* ---------- prompt jump rail ---------- */
+
+/* A minimap of the thread: one mark per prompt you sent, and the whole strip
+   drags like a scrollbar. It waits until there are enough turns to get lost in. */
+.jump-rail {
+  position: absolute; right: 15px; width: 26px; z-index: 6;
+  display: none;
+  touch-action: none; cursor: pointer;
+}
+.jump-rail.on { display: block; }
+.jump-ticks { position: absolute; inset: 0; }
+.jump-track {
+  position: absolute; left: 11px; top: 6px; bottom: 6px; width: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+}
+.jump-fill {
+  position: absolute; left: 0; top: 0; width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 55%, transparent),
+    color-mix(in srgb, var(--accent-2) 55%, transparent));
+}
+.jump-thumb {
+  position: absolute; left: 7px; width: 13px; min-height: 24px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: var(--elev);
+  opacity: .9;
+}
+.jump-tick {
+  position: absolute; left: 0; width: 26px; height: 14px;
+  margin-top: -7px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  display: grid; place-items: center;
+}
+.jump-tick::before {
+  content: ""; width: 8px; height: 2px; border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 42%, transparent);
+  transition: width .14s var(--ease), background .14s;
+}
+.jump-tick:hover::before, .jump-tick:focus-visible::before, .jump-tick.now::before {
+  width: 15px; background: var(--accent);
+}
+.jump-tick:focus-visible { outline: none; }
+.jump-label {
+  position: absolute; right: 32px; max-width: min(280px, 60vw);
+  transform: translateY(-50%);
+  padding: 6px 9px; border-radius: 10px;
+  background: var(--panel-solid); border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  color: var(--text-soft); font-size: 11.5px; line-height: 1.45;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none; opacity: 0; transition: opacity .12s;
+}
+.jump-label.show { opacity: 1; }
+/* Named twice because .jump-rail.on outranks .jump-rail: without the second
+   selector the strip stayed on screen at phone widths, over the right edge of
+   your own turns, which is the one place there is no room for it. */
+@media (max-width: 720px) { .jump-rail, .jump-rail.on { display: none; } }
 
 /* ---------- markdown ---------- */
 
@@ -1523,6 +1598,23 @@ table.data .empty-row td { text-align: center; color: var(--muted); padding: 24p
   border: 1px solid var(--border-soft); background: var(--code-bg); flex: none;
 }
 .picture-preview .preview-meta { font-size: 11.5px; color: var(--muted); line-height: 1.5; word-break: break-word; }
+
+/* A file dragged straight in from the file manager is the quickest way to attach a
+   picture — no picker, no copy into a scratch folder — so the whole page becomes the
+   drop target and the veil says so while the file is hovering over it. */
+.drop-veil {
+  position: fixed; inset: 0; z-index: 150; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 74%, transparent);
+}
+.drop-veil[hidden] { display: none; }
+.drop-card {
+  max-width: min(92vw, 430px); padding: 20px 26px; text-align: center;
+  border-radius: var(--radius); background: var(--panel); color: var(--text);
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 62%, var(--border));
+  font: 600 14px/1.5 var(--sans); box-shadow: 0 18px 46px rgba(0, 0, 0, .38);
+}
 
 /* An edit spends money on a model the price ceiling does not cover, so the number
    is stated here and a second click is what releases the request. */

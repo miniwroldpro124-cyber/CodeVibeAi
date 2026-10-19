@@ -85,13 +85,21 @@ them do on today's list), under **Edit** if it both takes a picture as input and
 it answers `audio/speech`. **Video** can only come from `VIDEO_MODELS`, because no video model
 appears in `/v1/models` at all.
 
-**Picture** is words in, image out. **Edit** is an image in, image out: you pick a file from disk or
-paste one straight off the clipboard, it is shrunk to 1100 px in the browser, and it travels to the
+**Picture** is words in, image out — and it can carry a reference: a screenshot or capture you pick,
+paste or drop, or a link you type, travels with the prompt as `image_url`. Not every picture model
+reads one, and the price is the same either way, so the tab says so rather than promising a match.
+**Edit** is an image in, image out: you pick a file from disk, paste one straight off the clipboard or
+drag one in from the file manager, it is shrunk to 1100 px in the browser, and it travels to the
 vision model as an `image_url` part with your instruction — the shape that works on this gateway,
 since its `images/edits` endpoint refuses every body tried against it. The picture comes back either
 as a markdown image or as its own content part, and both are read. **Voice** posts to
 `/v1/audio/speech` and plays the answer through a `blob:` URL, because an `<audio src>` can carry
 neither a POST nor a session cookie.
+
+A picture you attach to either tab is kept **in that browser** for three days — IndexedDB
+(`devchat.studio`), keyed by account id, capped at the size the send already allows, evicted when read
+if it has gone stale. Nothing is uploaded, and *Forget* next to the preview drops it. The point is the
+boring part of the workflow: re-picking the same capture after every reload.
 
 Money is never spent by a dropdown. One picture costs between 65 and 1800 dong on the provider's
 list, so anything at or above `MAX_PICTURE_DONG` (300 by default) is left out of the Picture list
@@ -710,7 +718,8 @@ it cannot be abused as an open relay to the rest of the upstream API.
   with the price shown before you press Generate and a confirm click on the one tab whose price can
   surprise you. A clip is a job rather than a request: the proxy takes the task id back from the
   provider and the page polls it until a file appears, so a long render does not have to hold one
-  request open.
+  request open. Picture and Edit both take a picture *in* — picked, pasted or dragged in — and the one
+  you attach is remembered by that browser for three days and by no server.
 - **Coder setup** — the provider's integration guide turned into copyable config for Cursor,
   Claude Code, VS Code, Codex, Droid, OpenCode and OpenClaw, with this deployment's base URL already
   filled in (root for Claude Code, `/v1` for everything OpenAI-shaped) and the key left as a
@@ -724,10 +733,12 @@ it cannot be abused as an open relay to the rest of the upstream API.
   budget read straight off the usage ledger. A refusal is a `429` with `Retry-After` and a sentence
   naming what ran out. See [Anti-abuse](#anti-abuse).
 - **Chat history** in `localStorage`, grouped by day, searchable, and namespaced per user account.
-- **File attachments** — attach source files, or paste more than 3000 characters, and the text is
-  sent as a fenced block with its filename. An attachment alone is a complete message: with the box
-  empty, one chip unlocks Send, the file's name becomes the chat title, and the attachment survives
-  a sign-in or key prompt that interrupts the send.
+- **File attachments** — attach source files, drop them onto the page from the file manager, or paste
+  more than 3000 characters, and the text is sent as a fenced block with its filename. A drop that
+  lands outside the composer is still read, never opened: the browser's own default is prevented, and
+  anything this chat cannot read as text says so instead of silently filling the tray. An attachment
+  alone is a complete message: with the box empty, one chip unlocks Send, the file's name becomes the
+  chat title, and the attachment survives a sign-in or key prompt that interrupts the send.
 - Markdown tables, task lists, inline code, links opened safely with `rel="noopener"`, and all model
   output passed through DOMPurify before it reaches the DOM.
 - **Dark and light themes** on all five pages, following your system preference until you override
@@ -738,6 +749,18 @@ it cannot be abused as an open relay to the rest of the upstream API.
 - **The interface** — a fixed sidebar with the model picker and history, a soft aurora and grid
   behind glass panels, a composer that grows with the text, starter prompt cards on an empty chat,
   and wide tables that scroll inside their own card instead of dragging the whole page sideways.
+- **The thread reads as a conversation** — your turns sit on the right in a bubble, answers on the
+  left, each with its avatar, so you can tell whose words you are looking at without reading the name.
+- **A rail over your prompts** — the strip down the right edge puts one mark per prompt exactly where
+  that prompt sits in the thread. Tap a mark to jump to it, or drag the strip and the thread follows
+  your pointer; a label previews the turn you are hovering. It appears once there are four turns worth
+  navigating and hides below 720 px, where there is no room beside a right-aligned bubble.
+- **Long threads stay scrollable** — turns that are off screen keep their last measured height but
+  skip layout and painting (`content-visibility`), pressing Send rebuilds only the rows that actually
+  changed instead of re-parsing every answer in the chat, and following a streaming tail writes
+  `scrollTop` directly rather than asking for an animated scroll. Measured on a seeded 120-turn
+  thread, one forced layout of the message list costs single-digit milliseconds; with those three
+  levers off it was over a second — paid once for every paint of every reply.
 
 ### Keyboard shortcuts
 

@@ -17,6 +17,14 @@
   // ceiling is a chat-sized one, not a camera roll.
   const EDIT_MAX_EDGE = 1100;
   const EDIT_MAX_CHARS = 3.2 * 1024 * 1024;
+  // The picture you point a generator at is usually one you took a minute ago, and
+  // picking it again after every reload is the tedious part of the workflow. So it
+  // is kept — in this browser only, in IndexedDB, under the account that picked it,
+  // and for three days. Nothing about it reaches the server or another site.
+  const PICTURE_DB = 'devchat.studio';
+  const PICTURE_STORE = 'pictures';
+  const PICTURE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+  const PICTURE_CACHE_MAX_CHARS = EDIT_MAX_CHARS;
 
   const els = {
     paneTitle: $('#paneTitle'),
@@ -29,6 +37,7 @@
     imageSize: $('#imageSize'),
     imageCount: $('#imageCount'),
     imageUrl: $('#imageUrl'),
+    imageFile: $('#imageFile'),
     editModel: $('#editModel'),
     editFile: $('#editFile'),
     editPreview: $('#editPreview'),
@@ -87,23 +96,28 @@
     image: {
       title: 'Make a picture',
       sub: 'Models are listed because the provider says they answer on the image endpoint — not because'
-        + ' the name looks right. Each picture is priced per request and billed to <b>your own</b> key.',
+        + ' the name looks right. Each picture is priced per request and billed to <b>your own</b> key.'
+        + ' A reference picture is optional: drop, paste or pick one and it travels with the prompt.'
+        + ' Not every picture model reads one — some answer from the words alone, and the price is the same.'
+        + ' The reference you add is remembered by <b>this browser</b> for three days, and by no server.',
       button: 'Generate picture',
       promptLabel: 'Prompt',
       placeholder: 'A red fox standing in fresh snow, low afternoon light, 35mm',
       note: 'One picture, one number: the price below is the provider\u2019s per-request rate for the model'
-        + ' you picked, and the picture is drawn on your own key.',
+        + ' you picked, and the picture is drawn on your own key. A reference you add is resized here'
+        + ' first, so the send is a few hundred KB rather than the file on your disk.',
       polish: true,
       polishNote: 'Rewrites what you typed into a prompt an image model reads well. One small chat request'
         + ' on your key — about 2 \u20ab.'
     },
     edit: {
       title: 'Edit a picture you already have',
-      sub: 'Choose a file or paste one (Ctrl+V), say what to change, and the model gets the picture and'
-        + ' your words together. This runs on the models the provider says can <b>see</b> an image and'
-        + ' draw a new one —'
+      sub: 'Choose a file, paste one (Ctrl+V) or drag one in from the file manager, say what to change, and'
+        + ' the model gets the picture and your words together. This runs on the models the provider says can'
+        + ' <b>see</b> an image and draw a new one —'
         + ' the <code>images/edits</code> endpoint exists in its price list but refuses every request'
-        + ' this server has sent it, so it is not used.',
+        + ' this server has sent it, so it is not used. The picture you add stays in <b>this browser</b>'
+        + ' for three days, and Forget drops it.',
       button: 'Check the price',
       promptLabel: 'What to change',
       placeholder: 'Keep her face and pose exactly as they are; replace the grey wall with a bookshelf'
@@ -174,6 +188,85 @@
     els.confirmBox.hidden = true;
   }
 
+  /* ------------------------------------------------------------- picture cache */
+
+  /* IndexedDB rather than localStorage: the value is a few hundred kilobytes of
+     base64 and localStorage is a synchronous, ~5 MB, JSON-only store shared with
+     every chat on this origin. Here a full cache refuses one write and the picture
+     simply is not remembered, instead of the page losing its transcripts. */
+  let dbPromise = null;
+
+  function openDb() {
+    if (!window.indexedDB) return Promise.reject(new Error('This browser has no local object store.'));
+    if (!dbPromise) {
+      dbPromise = new Promise((done, fail) => {
+        const req = indexedDB.open(PICTURE_DB, 1);
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains(PICTURE_STORE)) req.result.createObjectStore(PICTURE_STORE);
+        };
+        req.onsuccess = () => done(req.result);
+        req.onerror = () => fail(req.error || new Error('The picture cache could not be opened.'));
+        req.onblocked = () => fail(new Error('The picture cache is held by another tab.'));
+      });
+      // A rejected open would otherwise poison every later attempt with the same error.
+      dbPromise.catch(() => { dbPromise = null; });
+    }
+    return dbPromise;
+  }
+
+  // Keyed by account, so two people sharing a browser do not inherit each other's
+  // reference picture.
+  function pictureKey() {
+    const id = window.Auth.user?.id;
+    return id ? `reference:u${id}` : null;
+  }
+
+  function run(db, mode, work) {
+    return new Promise((done, fail) => {
+      const tx = db.transaction(PICTURE_STORE, mode);
+      const req = work(tx.objectStore(PICTURE_STORE));
+      tx.oncomplete = () => done(req.result);
+      tx.onerror = () => fail(tx.error || new Error('The picture cache call failed.'));
+      tx.onabort = () => fail(tx.error || new Error('The picture cache write was refused.'));
+    });
+  }
+
+  async function cacheWrite(record) {
+    const key = pictureKey();
+    if (!key || record.dataUrl.length > PICTURE_CACHE_MAX_CHARS) return false;
+    try {
+      await run(await openDb(), 'readwrite', (store) => store.put(record, key));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function cacheRead() {
+    const key = pictureKey();
+    if (!key) return null;
+    try {
+      const db = await openDb();
+      const found = await run(db, 'readonly', (store) => store.get(key));
+      if (!found?.dataUrl || !found?.label) return null;
+      if (Date.now() - Number(found.savedAt || 0) > PICTURE_TTL_MS) {
+        await run(db, 'readwrite', (store) => store.delete(key));
+        return null;
+      }
+      return found;
+    } catch {
+      return null;
+    }
+  }
+
+  async function cacheClear() {
+    const key = pictureKey();
+    if (!key) return;
+    try {
+      await run(await openDb(), 'readwrite', (store) => store.delete(key));
+    } catch { /* there is nothing to forget */ }
+  }
+
   // Only textContent and createElement: a model's own words about a picture are
   // provider data, and provider data never becomes markup on this page.
   function element(tag, className, text) {
@@ -241,16 +334,16 @@
   }
 
   function updateCeilingNote() {
-    if (state.mode !== 'image' || !state.pictureCeiling || !state.pictureTotal) {
-      els.paneNote.textContent = COPY.image.note;
-      return;
-    }
+    // Each pane explains its own money, so the note travels with the tab instead of
+    // repeating the picture pane's sentence under Video.
+    els.paneNote.textContent = COPY[state.mode].note;
+    els.paneNote.hidden = false;
+    if (state.mode !== 'image' || !state.pictureCeiling || !state.pictureTotal) return;
     const hidden = state.pictureTotal - state.models.image.length;
-    els.paneNote.textContent = COPY.image.note
-      + (hidden > 0
-        ? ` ${state.models.image.length} of the ${state.pictureTotal} picture models on this account are`
-          + ` offered here: the other ${hidden} cost ${vnd(state.pictureCeiling)} or more for one picture.`
-        : ' Every picture model on this account is under the price limit, so all of them are offered.');
+    els.paneNote.textContent += hidden > 0
+      ? ` ${state.models.image.length} of the ${state.pictureTotal} picture models on this account are`
+        + ` offered here: the other ${hidden} cost ${vnd(state.pictureCeiling)} or more for one picture.`
+      : ' Every picture model on this account is under the price limit, so all of them are offered.';
   }
 
   function setMode(mode) {
@@ -272,7 +365,7 @@
     els.prompt.placeholder = copy.placeholder;
     els.polishBtn.hidden = !copy.polish;
     els.polishNote.textContent = copy.polishNote || '';
-    if (mode === 'edit') showPreview();
+    if (mode === 'edit' || mode === 'image') showPreview();
     fillSelect(mode);
     updatePrice();
     updateCeilingNote();
@@ -347,14 +440,36 @@
       .find((file) => /^image\//.test(file.type)) || null;
   }
 
+  function previewNote() {
+    const picture = state.picture;
+    if (!picture.cached) return picture.label;
+    if (!picture.savedAt) return `${picture.label} · kept in this browser`;
+    const age = Math.floor((Date.now() - picture.savedAt) / 86400000);
+    return `${picture.label} · kept in this browser ${age <= 0 ? 'today' : `for ${age} day${age === 1 ? '' : 's'}`}`;
+  }
+
+  // Both picture panes take a reference now, so the preview belongs to whichever
+  // one is open rather than to Edit alone.
   function showPreview() {
     els.editPreview.textContent = '';
-    els.editPreview.hidden = state.mode !== 'edit' || !state.picture;
-    if (!state.picture) return;
+    const pane = state.mode === 'image' || state.mode === 'edit';
+    els.editPreview.hidden = !pane || !state.picture;
+    if (!pane || !state.picture) return;
+
     const thumb = element('img');
     thumb.src = state.picture.dataUrl;
     thumb.alt = '';
-    els.editPreview.append(thumb, element('span', 'preview-meta', state.picture.label));
+    const forget = element('button', 'mini-btn', 'Forget');
+    forget.type = 'button';
+    forget.title = 'Clear the picture and drop it from this browser\u2019s cache';
+    forget.addEventListener('click', () => {
+      state.picture = null;
+      els.editFile.value = '';
+      els.imageFile.value = '';
+      cacheClear();
+      showPreview();
+    });
+    els.editPreview.append(thumb, element('span', 'preview-meta', previewNote()), forget);
   }
 
   async function choosePicture(file) {
@@ -366,6 +481,7 @@
     if (!/^image\//.test(file.type)) {
       state.picture = null;
       els.editFile.value = '';
+      els.imageFile.value = '';
       showPreview();
       showError('Pick a picture — PNG, JPEG, WebP or GIF.');
       return;
@@ -377,10 +493,10 @@
         return;
       }
       const name = file.name && file.name !== 'blob' ? file.name : 'Pasted picture';
-      state.picture = {
-        dataUrl,
-        label: `${name} · ${width} × ${height} · about ${Math.round(dataUrl.length * 0.75 / 1024)} KB sent`
-      };
+      const label = `${name} · ${width} × ${height} · about ${Math.round(dataUrl.length * 0.75 / 1024)} KB sent`;
+      const savedAt = Date.now();
+      const kept = await cacheWrite({ dataUrl, label, savedAt });
+      state.picture = { dataUrl, label, savedAt: kept ? savedAt : 0, cached: kept };
       hideConfirm();
       showPreview();
       clearError();
@@ -492,7 +608,10 @@
       n: pictureCount()
     };
     if (els.imageSize.value) body.size = els.imageSize.value;
-    if (els.imageUrl.value.trim()) body.imageUrl = els.imageUrl.value.trim();
+    // A file the visitor picked or dropped beats a link they typed: it is the thing
+    // they are looking at, and sending both would leave the provider to guess.
+    if (state.picture) body.picture = state.picture.dataUrl;
+    else if (els.imageUrl.value.trim()) body.imageUrl = els.imageUrl.value.trim();
 
     const res = await window.Auth.api('/api/image', { method: 'POST', body, signal: state.controller.signal });
     if (state.controller.signal.aborted) {
@@ -786,6 +905,57 @@
     }
   }
 
+  async function restorePicture() {
+    const found = await cacheRead();
+    if (!found) return;
+    state.picture = { dataUrl: found.dataUrl, label: found.label, savedAt: Number(found.savedAt), cached: true };
+    showPreview();
+  }
+
+  /* ------------------------------------------------------- a file from the desk */
+
+  /* Dragging a picture in off the file manager is the shortest path there is: the
+     browser hands over the same File object the picker would, so the bytes are read
+     straight off the disk — no save-then-reopen detour, no intermediate copy, and
+     nothing written anywhere but in memory for this one request. */
+  function armDrop() {
+    const veil = element('div', 'drop-veil');
+    veil.hidden = true;
+    veil.append(element('div', 'drop-card',
+      'Drop the picture — it is read from your disk as it is, and stays in this tab'));
+    document.body.append(veil);
+
+    let depth = 0;
+    const wants = () => state.mode === 'image' || state.mode === 'edit';
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+
+    document.addEventListener('dragenter', (event) => {
+      if (!wants() || !hasFiles(event)) return;
+      event.preventDefault();
+      depth += 1;
+      veil.hidden = false;
+    });
+    document.addEventListener('dragover', (event) => {
+      if (!wants() || !hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    });
+    document.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) veil.hidden = true;
+    });
+    document.addEventListener('drop', (event) => {
+      if (!wants() || !hasFiles(event)) return;
+      event.preventDefault();
+      depth = 0;
+      veil.hidden = true;
+      const file = Array.from(event.dataTransfer.files || [])
+        .find((item) => /^image\//.test(item.type));
+      if (file) choosePicture(file);
+      else showError('That is not a picture this studio can send — PNG, JPEG, WebP or GIF.');
+    });
+  }
+
   function bind() {
     for (const tab of document.querySelectorAll('.sp-tab')) tab.addEventListener('click', () => setMode(tab.dataset.mode));
     els.goBtn.addEventListener('click', generate);
@@ -804,12 +974,14 @@
       showStatus('');
     });
     els.editFile.addEventListener('change', () => choosePicture(els.editFile.files[0]));
+    els.imageFile.addEventListener('change', () => choosePicture(els.imageFile.files[0]));
+    armDrop();
     // Pasting is how a picture actually moves around a desktop, so a screenshot that
     // is already on the clipboard should not have to be saved to a file first. The
     // prompt is a plain textarea, so text still pastes into it as normal — taking the
     // image alongside costs nothing, and that is what a copied picture needs.
     document.addEventListener('paste', (event) => {
-      if (state.mode !== 'edit') return;
+      if (state.mode !== 'edit' && state.mode !== 'image') return;
       const file = clipboardImage(event.clipboardData);
       if (file) choosePicture(file);
     });
@@ -834,6 +1006,7 @@
     bind();
     setMode('image');
     await loadCatalogue();
+    await restorePicture();
   }
 
   start();

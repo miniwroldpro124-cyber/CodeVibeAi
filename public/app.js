@@ -164,6 +164,35 @@
   streamInner.className = 'messages-inner';
   messagesEl.appendChild(streamInner);
 
+  // Whether the tail should follow the answer as it grows. Reading the list
+  // height to work this out forced a layout pass on every paint, which is what
+  // made a long thread stutter; the position only changes when someone scrolls.
+  let followTail = true;
+  function trackFollow() {
+    followTail = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 140;
+    syncRail();
+  }
+  messagesEl.addEventListener('scroll', trackFollow, { passive: true });
+
+  // Prompt rail: one mark per turn you sent, and the strip itself drags.
+  const rail = document.createElement('div');
+  rail.className = 'jump-rail';
+  rail.setAttribute('role', 'navigation');
+  rail.setAttribute('aria-label', 'Jump between your prompts');
+  const railTrack = document.createElement('div');
+  railTrack.className = 'jump-track';
+  const railFill = document.createElement('div');
+  railFill.className = 'jump-fill';
+  const railTicks = document.createElement('div');
+  railTicks.className = 'jump-ticks';
+  const railThumb = document.createElement('div');
+  railThumb.className = 'jump-thumb';
+  const railLabel = document.createElement('div');
+  railLabel.className = 'jump-label';
+  railTrack.appendChild(railFill);
+  rail.append(railTrack, railTicks, railThumb, railLabel);
+  $('.main').appendChild(rail);
+
   /* ---------------- utilities ---------------- */
 
   function uid() {
@@ -589,15 +618,28 @@
     return caret;
   }
 
+  // Rows live as long as the message objects that made them. A turn is only ever
+  // appended or truncated, so comparing object identity finds the first row that
+  // differs and rebuilds from there instead of re-parsing every answer in the
+  // thread — which, on a long chat, was the bulk of the cost of pressing Send.
+  let rendered = [];
+
   function renderConversation() {
     const conv = activeConv();
-    streamInner.replaceChildren();
     const messages = conv?.messages || [];
+
+    let same = 0;
+    while (same < messages.length && same < rendered.length && rendered[same] === messages[same]) same += 1;
+    while (streamInner.childElementCount > same) streamInner.lastElementChild.remove();
+    for (let i = same; i < messages.length; i += 1) streamInner.appendChild(messageNode(messages[i], i));
+    rendered = messages.slice();
+
     emptyEl.hidden = messages.length > 0;
-    messages.forEach((msg, i) => streamInner.appendChild(messageNode(msg, i)));
     updateCost();
     updateSidebarActive();
+    followTail = true;
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    buildRail();
   }
 
   function updateCost() {
@@ -907,7 +949,7 @@
     let paintTimer = null;
 
     const stick = () => {
-      if (isNearBottom()) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (followTail) messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
     const paint = (final = false) => {
@@ -924,6 +966,9 @@
       // Scrolling has to read the list height, and doing that per SSE chunk
       // forced a layout pass dozens of times a second. Painting is the only
       // moment the height can actually change, so it belongs here.
+      // The counter is a paint, not a chunk: a reply arrives in far more pieces
+      // than the screen can usefully redraw.
+      if (msg.thinking) statusEl.textContent = `${msg.content.length.toLocaleString()} chars`;
       stick();
     };
 
@@ -1002,7 +1047,6 @@
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let tokens = 0;
 
       statusEl.textContent = 'generating…';
 
@@ -1044,8 +1088,6 @@
           if (typeof delta.content === 'string' && delta.content) {
             if (reasoningStartedAt && !msg.reasoningMs) msg.reasoningMs = performance.now() - reasoningStartedAt;
             msg.content += delta.content;
-            tokens = msg.content.length;
-            statusEl.textContent = `${tokens.toLocaleString()} chars`;
             schedulePaint();
           }
           if (chunk.usage) {
@@ -1093,12 +1135,190 @@
       saveChats();
       renderConvList();
       stick();
+      // The answer changed height all the way down the thread, so the marks
+      // need re-measuring once, at the end, rather than on every paint.
+      buildRail();
     }
   }
 
-  function isNearBottom() {
-    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 140;
+  /* ---------------- prompt rail ---------------- */
+
+  const RAIL_MIN = 4;
+  let railRows = [];
+  let railPos = [];
+
+  function railText(row) {
+    return (row.querySelector('.md')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90);
   }
+
+  // Marks sit where their prompt sits, so the rail reads as a map of the thread
+  // rather than a list of turns. Prompts skipped by content-visibility report
+  // their placeholder height, so the marks are re-measured as the thread is
+  // scrolled through and settle onto the truth.
+  let railMeasuredAt = 0;
+
+  function measureTicks() {
+    const span = Math.max(1, streamInner.offsetHeight);
+    const base = streamInner.getBoundingClientRect().top;
+    const ticks = railTicks.children;
+    railPos = railRows.map((row, i) => {
+      const at = Math.min(1, Math.max(0, (row.getBoundingClientRect().top - base) / span));
+      if (ticks[i]) ticks[i].style.top = `${at * 100}%`;
+      return at;
+    });
+    railMeasuredAt = Date.now();
+  }
+
+  function buildRail() {
+    railRows = $$('.msg.user', streamInner);
+    const on = railRows.length >= RAIL_MIN;
+    rail.classList.toggle('on', on);
+    if (!on) {
+      railTicks.replaceChildren();
+      railPos = [];
+      return;
+    }
+
+    railBox();
+    const frag = document.createDocumentFragment();
+    railRows.forEach((row, i) => {
+      const tick = document.createElement('button');
+      tick.type = 'button';
+      tick.className = 'jump-tick';
+      tick.dataset.i = i;
+      tick.setAttribute('aria-label', `Prompt ${i + 1}: ${railText(row)}`);
+      frag.appendChild(tick);
+    });
+    railTicks.replaceChildren(frag);
+    measureTicks();
+    syncRail();
+  }
+
+  // The rail is a sibling of the scroll box, so it has to be told where the
+  // thread starts — the header above it and the composer under it both move.
+  function railBox() {
+    rail.style.top = `${messagesEl.offsetTop}px`;
+    rail.style.height = `${messagesEl.clientHeight}px`;
+  }
+
+  function syncRail() {
+    if (!rail.classList.contains('on')) return;
+    const h = rail.clientHeight;
+    if (!h) return;
+    // Cheap on purpose: a scroll settles the placeholder heights of the prompts
+    // it passes, so re-reading every few hundred milliseconds keeps the marks
+    // honest without measuring the whole thread on every scroll event.
+    if (Date.now() - railMeasuredAt > 400) measureTicks();
+    const view = messagesEl.clientHeight;
+    const full = Math.max(1, messagesEl.scrollHeight);
+    const thumbH = Math.max(24, Math.min(h, (view / full) * h));
+    const travel = Math.max(1, h - thumbH);
+    const y = Math.min(travel, (messagesEl.scrollTop / Math.max(1, full - view)) * travel);
+    railThumb.style.height = `${thumbH}px`;
+    railThumb.style.top = `${y}px`;
+    railFill.style.height = `${((y + thumbH) / h) * 100}%`;
+
+    const line = (messagesEl.scrollTop + 30) / full;
+    let now = 0;
+    for (let i = 0; i < railPos.length; i += 1) if (railPos[i] <= line) now = i;
+    const ticks = railTicks.children;
+    for (let i = 0; i < ticks.length; i += 1) ticks[i].classList.toggle('now', i === now);
+  }
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => {
+      if (!rail.classList.contains('on')) return;
+      railBox();
+      syncRail();
+    }).observe(messagesEl);
+  }
+
+  function jumpToPrompt(i) {
+    const row = railRows[i];
+    if (!row) return;
+    // A jump the visitor asked for is the one place an animated scroll helps.
+    row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function scrubTo(event) {
+    const rect = rail.getBoundingClientRect();
+    const thumbH = railThumb.offsetHeight || 24;
+    const travel = Math.max(1, rect.height - thumbH);
+    const y = Math.min(travel, Math.max(0, event.clientY - rect.top - thumbH / 2));
+    messagesEl.scrollTop = (y / travel) * Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
+  }
+
+  // The strip is a scrubber first and a list of buttons second: marks sit only
+  // a few pixels apart in a long thread, so "which mark did they mean" is
+  // answered by distance rather than by whichever button happens to be on top.
+  let scrubbing = false;
+  let scrubMoved = false;
+  let scrubStartY = 0;
+
+  function nearestTick(clientY) {
+    if (!railPos.length) return -1;
+    const rect = rail.getBoundingClientRect();
+    const at = (clientY - rect.top) / Math.max(1, rect.height);
+    let best = -1;
+    let bestGap = Infinity;
+    for (let i = 0; i < railPos.length; i += 1) {
+      const gap = Math.abs(railPos[i] - at);
+      if (gap < bestGap) { bestGap = gap; best = i; }
+    }
+    return bestGap * rect.height <= 9 ? best : -1;
+  }
+
+  rail.addEventListener('pointerdown', (event) => {
+    scrubbing = true;
+    scrubMoved = false;
+    scrubStartY = event.clientY;
+    event.preventDefault();
+    try {
+      rail.setPointerCapture(event.pointerId);
+    } catch { /* a pointer the browser never started cannot be captured */ }
+  });
+  rail.addEventListener('pointermove', (event) => {
+    if (!scrubbing) return;
+    if (!scrubMoved && Math.abs(event.clientY - scrubStartY) < 4) return;
+    scrubMoved = true;
+    scrubTo(event);
+  });
+  function endScrub(event) {
+    if (!scrubbing) return;
+    scrubbing = false;
+    try {
+      if (rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+    } catch { /* already released */ }
+    if (scrubMoved) return;
+    const near = nearestTick(event.clientY);
+    if (near >= 0) jumpToPrompt(near);
+    else scrubTo(event);
+  }
+  rail.addEventListener('pointerup', endScrub);
+  rail.addEventListener('pointercancel', endScrub);
+  // Keyboard activation produces a click with no pointer behind it.
+  rail.addEventListener('click', (event) => {
+    if (event.detail !== 0) return;
+    const tick = event.target.closest('.jump-tick');
+    if (tick) jumpToPrompt(Number(tick.dataset.i));
+  });
+  rail.addEventListener('pointerover', (event) => {
+    const tick = event.target.closest('.jump-tick');
+    if (!tick) return;
+    const i = Number(tick.dataset.i);
+    railLabel.textContent = railText(railRows[i]) || `Prompt ${i + 1}`;
+    railLabel.style.top = tick.style.top;
+    railLabel.classList.add('show');
+  });
+  rail.addEventListener('pointerout', (event) => {
+    if (event.target.closest('.jump-tick')) railLabel.classList.remove('show');
+  });
+
+  let resizeTimer = null;
+  addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(buildRail, 180);
+  });
 
   /* ---------------- sending ---------------- */
 
@@ -1258,6 +1478,69 @@
     autosize();
   }
 
+  /* ---------------- drag in from disk ---------------- */
+
+  // Dropping a file on the page is the same attach as picking it, with nothing in
+  // between: the browser hands over a reference to the file on disk and it is read
+  // once, here — no copy into a scratch folder, no paste step. The list of names
+  // this chat accepts is read off the picker element so the two can never disagree
+  // about what an attachment is.
+  function armDrop() {
+    const exts = String($('#fileInput').accept || '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    const attachable = (file) => {
+      const name = String(file.name || '').toLowerCase();
+      return exts.some((ext) => (ext.startsWith('.') ? name.endsWith(ext) : name === ext || name.endsWith(`/${ext}`)));
+    };
+
+    const veil = document.createElement('div');
+    veil.className = 'drop-veil';
+    veil.hidden = true;
+    const card = document.createElement('div');
+    card.className = 'drop-card';
+    card.textContent = 'Drop the file — it is read straight off your disk and never leaves this browser except with your message';
+    veil.append(card);
+    document.body.append(veil);
+
+    let depth = 0;
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+
+    document.addEventListener('dragenter', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      depth += 1;
+      veil.hidden = false;
+    });
+    document.addEventListener('dragover', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    });
+    document.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) veil.hidden = true;
+    });
+    document.addEventListener('drop', (event) => {
+      if (!hasFiles(event)) return;
+      // Preventing the default is also what stops the browser navigating away to
+      // the file somebody missed the composer with.
+      event.preventDefault();
+      depth = 0;
+      veil.hidden = true;
+      const files = Array.from(event.dataTransfer.files || []);
+      const wanted = files.filter(attachable);
+      const others = files.filter((file) => !attachable(file));
+      if (wanted.length) handleFiles(wanted);
+      if (others.length) {
+        toast(others.some((file) => /^image\//.test(file.type))
+          ? 'A picture belongs in the Studio — drop it on the Picture tab there'
+          : `${others[0].name} is not a file this chat can read as text`, true);
+      }
+    });
+  }
+
   /* ---------------- theme ---------------- */
 
   function applyTheme() {
@@ -1412,6 +1695,7 @@
 
     $('#attachBtn').addEventListener('click', () => $('#fileInput').click());
     $('#fileInput').addEventListener('change', (event) => handleFiles(event.target.files));
+    armDrop();
 
     document.addEventListener('click', (event) => {
       if (!modelPanel.hidden && !$('#modelPicker').contains(event.target)) toggleModelPanel(false);
