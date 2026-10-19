@@ -42,6 +42,21 @@ const MIME = {
 assertMasterKey();
 const store = await Store.open();
 await bootstrapAdmin(store);
+// Off by default: deleting an account also deletes its encrypted key, so this
+// only runs when the operator has opted in on purpose. `npm run prune` shows the
+// same list as a dry run first.
+if (process.env.AUTO_PRUNE === '1') {
+  try {
+    const pruned = await store.pruneInactiveUsers({
+      inactiveDays: Number(process.env.PRUNE_INACTIVE_DAYS) || 7,
+      dataDays: Number(process.env.PRUNE_DATA_DAYS) || 3,
+      apply: true
+    });
+    console.log(`[prune] removed ${pruned.deletedUsers} inactive account(s) and usage older than the cutoff`);
+  } catch (err) {
+    console.error('[prune] failed:', err);
+  }
+}
 const handleApi = createApi({
   store,
   env: { apiBase: API_BASE, defaultModel: DEFAULT_MODEL }

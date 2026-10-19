@@ -59,6 +59,17 @@ async function start() {
   assertMasterKey();
   const store = await Store.open();
   await bootstrapAdmin(store);
+  if (process.env.AUTO_PRUNE === '1') {
+    try {
+      await store.pruneInactiveUsers({
+        inactiveDays: Number(process.env.PRUNE_INACTIVE_DAYS) || 7,
+        dataDays: Number(process.env.PRUNE_DATA_DAYS) || 3,
+        apply: true
+      });
+    } catch (err) {
+      console.error('[prune] failed:', err);
+    }
+  }
   return createApi({ store, env: { apiBase: API_BASE, defaultModel: DEFAULT_MODEL } });
 }
 

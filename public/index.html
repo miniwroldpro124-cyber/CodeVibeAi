@@ -7,7 +7,7 @@
 <title>DevChat — AI pair programmer</title>
 <link rel="icon" type="image/jpeg" href="/logo-mark.jpg">
 <link rel="stylesheet" href="/vendor/atom-one-dark.min.css">
-<link rel="stylesheet" href="/styles.css?v=18">
+<link rel="stylesheet" href="/styles.css?v=19">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
 <script src="/watchdog.js" data-mode="warn" defer></script>
@@ -105,6 +105,9 @@
 
       <div class="topbar-right">
         <span class="cost-chip" id="costChip" title="Estimated spend for this conversation">0 ₫</span>
+        <button class="icon-btn" id="filesBtn" aria-label="Saved files" title="Saved files">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v10H3z"/><path d="M3 7V5h6l2 2"/></svg>
+        </button>
         <button class="icon-btn" id="settingsBtn" aria-label="Generation settings" title="Generation settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
         </button>
@@ -132,6 +135,14 @@
             <input type="number" id="maxTokens" min="0" step="256" placeholder="model default">
           </label>
         </div>
+        <label class="setting setting-check">
+          <input type="checkbox" id="stepThinking">
+          <span>Step-by-step: solve in small numbered parts, and check each part before moving on</span>
+        </label>
+        <label class="setting setting-check">
+          <input type="checkbox" id="autoFiles" checked>
+          <span>Save code from answers as files in this browser (30 MB per account, 3 days)</span>
+        </label>
       </div>
 
       <div class="sp-pane" data-sp="account" hidden>
@@ -159,6 +170,29 @@
           <span>Session</span>
           <div class="btn-row">
             <button type="button" class="btn btn-ghost danger" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="files-panel" id="filesPanel" hidden>
+      <div class="fp-head">
+        <b>Saved files</b>
+        <span class="fp-quota" id="filesQuota"></span>
+        <button type="button" class="icon-btn fp-close" id="filesCloseBtn" aria-label="Close files">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="fp-body">
+        <div class="fp-list" id="filesList"></div>
+        <div class="fp-editor">
+          <input class="fp-name" id="fileEditName" placeholder="File name" spellcheck="false" autocomplete="off">
+          <textarea class="fp-code" id="fileEditBody" spellcheck="false" placeholder="Pick a file on the left, or write a new one here."></textarea>
+          <div class="fp-actions">
+            <button type="button" class="btn btn-primary" id="fileSaveBtn">Save</button>
+            <button type="button" class="btn btn-ghost" id="fileDownloadBtn">Download</button>
+            <button type="button" class="btn btn-ghost danger" id="fileDeleteBtn">Delete</button>
+            <button type="button" class="btn btn-ghost" id="filesClearBtn" title="Delete every saved file">Clear all</button>
           </div>
         </div>
       </div>
@@ -199,7 +233,7 @@
           <button class="icon-btn" id="attachBtn" title="Attach files — an attachment alone is enough to send" aria-label="Attach a code file">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.4 8.4a2 2 0 01-3-3L14 7"/></svg>
           </button>
-          <input type="file" id="fileInput" accept=".js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.cs,.rb,.php,.sh,.bash,.zsh,.ps1,.sql,.html,.css,.scss,.vue,.svelte,.json,.yaml,.yml,.toml,.ini,.env,.md,.txt,.log,.xml,.csv,.kt,.kts,.swift,.dart,.scala,.lua,.pl,.r,.m,.gradle,.make,.mk,.dockerfile,Dockerfile" multiple hidden>
+          <input type="file" id="fileInput" accept=".js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.cs,.rb,.php,.sh,.bash,.zsh,.ps1,.sql,.html,.css,.scss,.vue,.svelte,.json,.yaml,.yml,.toml,.ini,.env,.md,.txt,.log,.xml,.csv,.kt,.kts,.swift,.dart,.scala,.lua,.pl,.r,.m,.gradle,.make,.mk,.dockerfile,Dockerfile,.zip,.rar,.7z,application/zip,application/x-zip-compressed" multiple hidden>
           <button class="send-btn" id="sendBtn" title="Send (Enter)" aria-label="Send">
             <svg class="i-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           </button>
@@ -221,9 +255,9 @@
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
-<script src="/auth.js?v=18"></script>
-<script src="/zip.js?v=18"></script>
-<script src="/style.js?v=18"></script>
-<script src="/app.js?v=18"></script>
+<script src="/auth.js?v=19"></script>
+<script src="/zip.js?v=19"></script>
+<script src="/style.js?v=19"></script>
+<script src="/app.js?v=19"></script>
 </body>
 </html>

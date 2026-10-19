@@ -565,6 +565,67 @@ html[data-theme="light"] .i-moon { display: none; }
 }
 .setting input[type="range"] { width: 100%; accent-color: var(--accent); height: 22px; cursor: pointer; }
 .setting-row { display: flex; gap: 18px; }
+.setting-check {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+}
+.setting-check input { margin-top: 2px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; cursor: pointer; }
+.setting-check span {
+  text-transform: none; letter-spacing: 0; color: var(--text-soft);
+  font-size: 12.5px; line-height: 1.5; font-weight: 500;
+}
+
+/* ---------- saved files panel ---------- */
+
+.files-panel {
+  padding: 16px 20px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
+  backdrop-filter: blur(8px);
+  display: grid; gap: 12px;
+  max-height: min(58vh, 560px);
+  animation: rise .2s var(--ease-out);
+}
+.files-panel[hidden] { display: none; }
+.fp-head { display: flex; align-items: center; gap: 10px; }
+.fp-head b { font-size: 13px; font-weight: 680; }
+.fp-quota { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.fp-close { margin-left: auto; width: 30px; height: 30px; }
+.fp-body { display: grid; grid-template-columns: minmax(160px, 0.9fr) minmax(0, 1.5fr); gap: 12px; min-height: 0; }
+.fp-list {
+  display: grid; gap: 4px; align-content: start; overflow-y: auto;
+  max-height: 40vh; padding-right: 4px;
+}
+.fp-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border-radius: var(--radius-sm); text-align: left;
+  border: 1px solid var(--border-soft); background: var(--panel-solid);
+  transition: background .14s, border-color .14s, transform .14s var(--ease-spring);
+}
+.fp-item:hover { background: var(--hl); border-color: color-mix(in srgb, var(--accent) 30%, transparent); transform: translateY(-1px); }
+.fp-item.on { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+.fp-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.fp-item-meta { flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.fp-empty { padding: 18px 8px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.fp-editor { display: grid; grid-template-rows: auto minmax(180px, 1fr) auto; gap: 8px; min-height: 0; }
+.fp-name {
+  width: 100%; padding: 8px 10px; background: var(--panel-solid); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 12.5px; outline: none;
+}
+.fp-code {
+  width: 100%; min-height: 180px; padding: 10px 11px;
+  background: var(--panel-solid); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+  resize: vertical; outline: none; tab-size: 2;
+}
+.fp-name:focus, .fp-code:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.fp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- messages ---------- */
 
@@ -1160,6 +1221,10 @@ html[data-theme="light"] .md code:not(pre code) { color: #0a6e64; }
    panels it decorates are full width there. Keep the tint, drop the blur. */
 @media (max-width: 720px) {
   :root { --glass: none; }
+  .files-panel { padding: 12px; max-height: 62vh; }
+  .fp-body { grid-template-columns: 1fr; }
+  .fp-list { max-height: 112px; }
+  .fp-editor { grid-template-rows: auto minmax(150px, 1fr) auto; }
 }
 
 /* ---------- account row ---------- */

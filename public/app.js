@@ -9,8 +9,15 @@
   // Only an id is kept here, and only to parse the right history before the
   // session answers. Nothing from it is drawn until the server confirms the user.
   const LAST_USER_KEY = 'devchat.lastuser.v1';
-  const MAX_ATTACH_BYTES = 250 * 1024;
+  const MAX_ATTACH_BYTES = 3 * 1024 * 1024;
   const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+  // The workspace lives in IndexedDB, not on the server: 30 MB per account is a
+  // browser quota the operator never has to fund, and it disappears with the
+  // profile like the rest of this app's client-side state.
+  const FILE_DB = 'devchat.workspace';
+  const FILE_STORE = 'files';
+  const FILE_QUOTA = 30 * 1024 * 1024;
+  const FILE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
   const SPLIT_BYTES = 100 * 1024;
   // Covers both a model that never answers and one that stalls mid-stream.
   const IDLE_TIMEOUT_MS = 90000;
@@ -84,6 +91,10 @@
     // When on, an attachment over 100 KB is sent as consecutive parts instead of
     // one giant message.
     splitBig: false,
+    // Ask the model to work in small numbered parts and check each one.
+    steps: false,
+    // Save code blocks from an answer into the browser workspace.
+    autoFiles: true,
     collapsed: false
   };
 
@@ -492,6 +503,7 @@
     const out = [];
     const prompt = prefs.systemPrompt.trim();
     if (prompt) out.push({ role: 'system', content: prompt });
+    if (prefs.steps) out.push({ role: 'system', content: STEP_SYSTEM });
     conv.messages.slice(0, uptoIndex).forEach((m) => {
       if (m.role !== 'user' && m.role !== 'assistant') return;
       if (!m.content && !(m.images?.length)) return;
@@ -1214,6 +1226,11 @@
       state.controller = null;
       setStreaming(false);
       paint(true);
+      try {
+        await autoSaveReply(msg);
+      } catch (err) {
+        console.warn('[workspace] save failed', err);
+      }
       // Nobody is watching the screen when a long answer lands, so the sound is the
       // point of this. A stop the visitor pressed themselves stays silent.
       if (msg.error) window.Style?.play('error');
@@ -1654,30 +1671,47 @@
 
   async function handleFiles(fileList) {
     const jobs = Array.from(fileList || []).map(async (file) => {
+      const lower = String(file.name || '').toLowerCase();
+      if (lower.endsWith('.zip')) {
+        try {
+          const entries = await extractZip(file);
+          toast(entries.length
+            ? `Imported ${entries.length} file${entries.length === 1 ? '' : 's'} from ${file.name}`
+            : `${file.name} had no readable text files`);
+          return entries.map((entry) => ({ name: entry.name, text: entry.text }));
+        } catch {
+          toast(`Could not read ${file.name} — is it a valid .zip?`, true);
+          return [];
+        }
+      }
+      if (lower.endsWith('.rar') || lower.endsWith('.7z')) {
+        toast(`${file.name}: RAR/7z is not supported here — convert it to .zip first`, true);
+        return [];
+      }
       if (/^image\//.test(file.type || '')) {
         if (file.size > MAX_IMAGE_BYTES) {
           toast(`${file.name || 'image'} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB — skipped`, true);
-          return null;
+          return [];
         }
         try {
-          return { name: file.name || 'pasted-image.jpg', image: await readImage(file) };
+          return [{ name: file.name || 'pasted-image.jpg', image: await readImage(file) }];
         } catch {
           toast(`Could not read ${file.name || 'the image'}`, true);
-          return null;
+          return [];
         }
       }
       if (file.size > MAX_ATTACH_BYTES) {
-        toast(`${file.name} is over ${MAX_ATTACH_BYTES / 1024} KB — skipped`, true);
-        return null;
+        toast(`${file.name} is over ${MAX_ATTACH_BYTES / 1024 / 1024} MB — skipped`, true);
+        return [];
       }
       try {
-        return { name: file.name, text: await file.text() };
+        return [{ name: file.name, text: await file.text() }];
       } catch {
         toast(`Could not read ${file.name}`, true);
-        return null;
+        return [];
       }
     });
-    const loaded = (await Promise.all(jobs)).filter(Boolean);
+    const loaded = (await Promise.all(jobs)).flat().filter(Boolean);
     state.attachments.push(...loaded);
     renderAttachments();
     autosize();
@@ -1746,6 +1780,15 @@
   }
 
   /* ---------------- prompt improving ---------------- */
+
+  // Step mode is what "think in small parts, test each part" looks like in a chat
+  // contract: the model still answers in one message, but it is asked to plan in
+  // parts and to state a check after each one, so a wrong turn is caught early.
+  const STEP_SYSTEM = 'Solve this in small, numbered parts. Before each part, name in one short line what'
+    + ' you are about to do. Do the smallest useful piece, then run it or trace one concrete example,'
+    + ' and check it — name the test that would fail if it were wrong — and only then move on.'
+    + ' If a check fails, say so and fix that part before continuing. Keep each part short, do not'
+    + ' restate earlier parts, and end with the assembled result plus the checks that passed.';
 
   /* A model answers the question it was given, so a vague question buys a vague
      answer. This rewriter asks for the same request as a brief: the goal, the
@@ -1841,6 +1884,268 @@
     });
   }
 
+  /* ---------------- saved files (workspace) ---------------- */
+
+  let wsFiles = [];
+  let wsEditing = null;
+  let wsDbPromise = null;
+
+  function openFileDb() {
+    if (!wsDbPromise) {
+      wsDbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(FILE_DB, 1);
+        req.onupgradeneeded = () => {
+          if (!req.result.objectStoreNames.contains(FILE_STORE)) {
+            req.result.createObjectStore(FILE_STORE, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    return wsDbPromise;
+  }
+
+  async function wsRun(mode, fn) {
+    const db = await openFileDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(FILE_STORE, mode);
+      const store = tx.objectStore(FILE_STORE);
+      const req = fn(store);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  const wsOwner = () => (state.user ? `u${state.user.id}` : 'anon');
+  const wsId = (path) => `${wsOwner()}:${path}`;
+  const wsSize = (text) => new Blob([text || '']).size;
+  const wsUsed = () => wsFiles.reduce((n, f) => n + (f.bytes ?? wsSize(f.content)), 0);
+
+  function sanitizePath(name) {
+    const cleaned = String(name || '').replace(/\\/g, '/').split('/')
+      .filter((part) => part && part !== '.' && part !== '..')
+      .join('/');
+    return cleaned || 'file.txt';
+  }
+
+  async function wsRefresh() {
+    const all = await wsRun('readonly', (store) => store.getAll());
+    wsFiles = (all || []).filter((f) => f.owner === wsOwner());
+    renderFiles();
+  }
+
+  async function wsPrune() {
+    const cutoff = Date.now() - FILE_TTL_MS;
+    const all = await wsRun('readonly', (store) => store.getAll());
+    const stale = (all || []).filter((f) => f.owner === wsOwner() && (f.updatedAt || 0) < cutoff);
+    for (const f of stale) await wsRun('readwrite', (store) => store.delete(f.id));
+    if (stale.length) await wsRefresh();
+  }
+
+  async function initWorkspace() {
+    if (!state.user) return;
+    try {
+      await wsPrune();
+      await wsRefresh();
+    } catch (err) {
+      // A browser in private mode can refuse IndexedDB; chat must still work.
+      console.warn('[workspace] unavailable', err);
+    }
+  }
+
+  function renderFiles() {
+    const list = $('#filesList');
+    if (!list) return;
+    const used = wsUsed();
+    $('#filesQuota').textContent = `${(used / 1024 / 1024).toFixed(2)} / 30 MB · ${wsFiles.length} file${wsFiles.length === 1 ? '' : 's'}`;
+    list.replaceChildren();
+    if (!wsFiles.length) {
+      const empty = document.createElement('div');
+      empty.className = 'fp-empty';
+      empty.textContent = 'No files yet. Code from an answer is saved here automatically.';
+      list.appendChild(empty);
+      return;
+    }
+    const sorted = wsFiles.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    for (const file of sorted) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'fp-item' + (wsEditing?.id === file.id ? ' on' : '');
+      const name = document.createElement('span');
+      name.className = 'fp-item-name';
+      name.textContent = file.path;
+      const meta = document.createElement('span');
+      meta.className = 'fp-item-meta';
+      meta.textContent = `${((file.bytes ?? wsSize(file.content)) / 1024).toFixed(1)} KB`;
+      row.append(name, meta);
+      row.addEventListener('click', () => {
+        wsEditing = file;
+        $('#fileEditName').value = file.path;
+        $('#fileEditBody').value = file.content;
+        renderFiles();
+      });
+      list.appendChild(row);
+    }
+  }
+
+  function openFiles() {
+    $('#filesPanel').hidden = false;
+    renderFiles();
+    $('#fileEditName').focus();
+  }
+
+  function closeFiles() {
+    $('#filesPanel').hidden = true;
+  }
+
+  async function saveEditedFile() {
+    const path = sanitizePath($('#fileEditName').value.trim());
+    const content = $('#fileEditBody').value;
+    if (!content) return toast('Nothing to save yet', true);
+    const id = wsId(path);
+    const existing = wsFiles.find((f) => f.id === id);
+    const bytes = wsSize(content);
+    const projected = wsUsed() - (existing ? (existing.bytes ?? wsSize(existing.content)) : 0) + bytes;
+    if (projected > FILE_QUOTA) {
+      return toast('That would pass the 30 MB workspace limit — delete an old file first', true);
+    }
+    const record = {
+      id, owner: wsOwner(), path, content, bytes,
+      updatedAt: Date.now(), createdAt: existing?.createdAt || Date.now(), manual: true
+    };
+    await wsRun('readwrite', (store) => store.put(record));
+    wsEditing = record;
+    await wsRefresh();
+    toast(`Saved ${path}`);
+  }
+
+  async function deleteEditedFile() {
+    if (!wsEditing) return toast('Pick a file first', true);
+    await wsRun('readwrite', (store) => store.delete(wsEditing.id));
+    const gone = wsEditing.path;
+    wsEditing = null;
+    $('#fileEditName').value = '';
+    $('#fileEditBody').value = '';
+    await wsRefresh();
+    toast(`Deleted ${gone}`);
+  }
+
+  async function clearWorkspace() {
+    if (!wsFiles.length) return toast('No saved files');
+    if (!confirm('Delete every saved file? This cannot be undone.')) return;
+    for (const f of wsFiles) await wsRun('readwrite', (store) => store.delete(f.id));
+    wsEditing = null;
+    $('#fileEditName').value = '';
+    $('#fileEditBody').value = '';
+    await wsRefresh();
+    toast('Workspace cleared');
+  }
+
+  function downloadEditedFile() {
+    const path = sanitizePath($('#fileEditName').value.trim());
+    const content = $('#fileEditBody').value;
+    if (!content) return toast('Nothing to download', true);
+    download(path.split('/').pop() || 'file.txt', content);
+  }
+
+  // A fence's info string is the only place a model reliably names a file, and the
+  // leading comment is the fallback. Everything else gets a name from its language.
+  function extractFiles(text) {
+    const out = [];
+    const re = /```([^\n]*)\n([\s\S]*?)```/g;
+    let match;
+    let index = 0;
+    while ((match = re.exec(String(text || '')))) {
+      index += 1;
+      const info = match[1].trim();
+      const [langRaw, ...rest] = info.split(/\s+/);
+      const lang = (langRaw || '').toLowerCase();
+      const body = match[2].replace(/\n$/, '');
+      if (body.trim().length < 20) continue;
+      let name = rest.join(' ').trim();
+      if (!name) {
+        const fm = (body.split('\n', 1)[0] || '').match(FILE_COMMENT);
+        name = fm ? fm[1] : '';
+      }
+      if (!name) name = `snippet-${index}.${EXT_BY_LANG[lang] || lang || 'txt'}`;
+      if (!/\.[A-Za-z0-9]{1,6}$/.test(name)) name += `.${EXT_BY_LANG[lang] || lang || 'txt'}`;
+      out.push({ path: sanitizePath(name), content: body });
+    }
+    return out;
+  }
+
+  async function autoSaveReply(msg) {
+    if (!prefs.autoFiles || !state.user || msg.role !== 'assistant' || !msg.content) return;
+    const files = extractFiles(msg.content);
+    if (!files.length) return;
+    for (const file of files) {
+      const id = wsId(file.path);
+      const existing = wsFiles.find((f) => f.id === id);
+      // Never overwrite a file the visitor edited by hand with the same answer.
+      if (existing && existing.manual) continue;
+      const projected = wsUsed() - (existing ? (existing.bytes ?? wsSize(existing.content)) : 0) + wsSize(file.content);
+      if (projected > FILE_QUOTA) {
+        toast('Workspace is full — new code was not saved', true);
+        return;
+      }
+      const record = {
+        id, owner: wsOwner(), path: file.path, content: file.content, bytes: wsSize(file.content),
+        createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now()
+      };
+      await wsRun('readwrite', (store) => store.put(record));
+      const at = wsFiles.findIndex((f) => f.id === id);
+      if (at >= 0) wsFiles[at] = record;
+      else wsFiles.push(record);
+    }
+    if (!$('#filesPanel').hidden) renderFiles();
+  }
+
+  /* ---------------- zip import ---------------- */
+
+  // ZIP is read here with the platform's own inflater; rar and 7z would need a
+  // bundled decoder, so they are refused with a sentence instead of silently
+  // attached as unreadable bytes.
+  async function extractZip(file) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let eocd = -1;
+    const floor = Math.max(0, buf.length - 65557);
+    for (let i = buf.length - 22; i >= floor; i -= 1) {
+      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('not a zip');
+    const count = view.getUint16(eocd + 10, true);
+    let off = view.getUint32(eocd + 16, true);
+    const out = [];
+    let total = 0;
+    for (let i = 0; i < count && out.length < 60; i += 1) {
+      if (view.getUint32(off, true) !== 0x02014b50) break;
+      const method = view.getUint16(off + 10, true);
+      const compSize = view.getUint32(off + 20, true);
+      const nameLen = view.getUint16(off + 28, true);
+      const extraLen = view.getUint16(off + 30, true);
+      const commentLen = view.getUint16(off + 32, true);
+      const localOff = view.getUint32(off + 42, true);
+      const name = new TextDecoder().decode(buf.subarray(off + 46, off + 46 + nameLen));
+      off += 46 + nameLen + extraLen + commentLen;
+      if (name.endsWith('/')) continue;
+      const header = localOff + 30 + view.getUint16(localOff + 26, true) + view.getUint16(localOff + 28, true);
+      const data = buf.subarray(header, header + compSize);
+      let raw;
+      if (method === 0) raw = data;
+      else if (method === 8) {
+        const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        raw = new Uint8Array(await new Response(stream).arrayBuffer());
+      } else continue;
+      if (raw.includes(0)) continue;
+      if (total + raw.length > MAX_ATTACH_BYTES) break;
+      total += raw.length;
+      out.push({ name, text: new TextDecoder().decode(raw) });
+    }
+    return out;
+  }
+
   /* ---------------- theme ---------------- */
 
   function applyTheme() {
@@ -1904,6 +2209,20 @@
       toast(prefs.splitBig
         ? 'Large files are on — anything over 100 KB is sent in parts'
         : 'Large-file splitting is off — files are sent whole');
+    });
+    const stepSel = $('#stepThinking');
+    stepSel.checked = Boolean(prefs.steps);
+    stepSel.addEventListener('change', () => {
+      prefs.steps = stepSel.checked;
+      savePrefs();
+      toast(prefs.steps ? 'Step-by-step is on' : 'Step-by-step is off');
+    });
+    const autoFilesSel = $('#autoFiles');
+    autoFilesSel.checked = Boolean(prefs.autoFiles);
+    autoFilesSel.addEventListener('change', () => {
+      prefs.autoFiles = autoFilesSel.checked;
+      savePrefs();
+      toast(prefs.autoFiles ? 'Code from answers will be saved' : 'Auto-saving code is off');
     });
     $('#newChatBtn').addEventListener('click', newConversation);
     $('#clearAllBtn').addEventListener('click', () => {
@@ -2042,6 +2361,12 @@
 
     $('#attachBtn').addEventListener('click', () => $('#fileInput').click());
     $('#fileInput').addEventListener('change', (event) => handleFiles(event.target.files));
+    $('#filesBtn').addEventListener('click', openFiles);
+    $('#filesCloseBtn').addEventListener('click', closeFiles);
+    $('#fileSaveBtn').addEventListener('click', saveEditedFile);
+    $('#fileDownloadBtn').addEventListener('click', downloadEditedFile);
+    $('#fileDeleteBtn').addEventListener('click', deleteEditedFile);
+    $('#filesClearBtn').addEventListener('click', clearWorkspace);
     armDrop();
 
     document.addEventListener('click', (event) => {
@@ -2178,6 +2503,7 @@
       }
       preloadedFor = user.id;
       renderConversation();
+      initWorkspace();
       // Load the catalogue after the thread is on screen, so typing and scrolling
       // never wait for a network round trip.
       setTimeout(() => {

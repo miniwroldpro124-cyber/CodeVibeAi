@@ -9,6 +9,7 @@
     "host": "node scripts/host.mjs",
     "admin": "node scripts/admin.mjs",
     "test:ui": "node .smoketest/ui-server.mjs",
+    "prune": "node scripts/prune.mjs",
     "migrate:turso": "node scripts/migrate-turso.mjs"
   },
   "engines": {
