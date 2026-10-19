@@ -702,7 +702,15 @@ it cannot be abused as an open relay to the rest of the upstream API.
 ## Features
 
 - **Streaming** answers over SSE, with a live caret and a Stop button that also cancels the
-  upstream request, so you stop paying for tokens you will not read.
+  upstream request, so you stop paying for tokens you will not read. While the answer is arriving
+  it is written as plain text and parsed as markdown once, when it ends, so a long stream stays
+  smooth instead of re-parsing the whole reply several times a second.
+- **Large files, split.** A toggle beside the composer: when it is on, an attachment past 100 KB is
+  sent as consecutive parts, cut at line breaks and labelled `part 1/2`, instead of one giant
+  message. When it is off, the file travels whole (up to 250 KB).
+- **Pictures in chat.** Drop, paste or pick an image anywhere on the page; it is scaled to 1280 px
+  in the browser, shown as a thumbnail chip, and sent as an `image_url` part. Picture bytes are not
+  written to chat history.
 - **One-click code copy.** Every block has a language label, a Copy button, and a Download button
   that names the file from the block's language or a leading comment (`// filename: src/a.js`, or
   a bare `# path/to/file.py`).
@@ -711,6 +719,14 @@ it cannot be abused as an open relay to the rest of the upstream API.
 - **Thinking time.** Models that emit `reasoning_content` get a collapsible *Thought process* panel
   and a chip such as `3706 tok · 2,02 ₫ · thought 43.0s · 47.8s`. Reasoning is stochastic: the same
   prompt may or may not produce a trace, so the chip omits it when the model did not think.
+- **Effort.** One control beside the composer — *auto*, *off*, *low*, *medium*, *high* — sent to the
+  provider as `reasoning_effort`, with *off* meaning `none`. *Auto* reads the request: a pasted trace,
+  a refactor or a long message gets *high*, a one-line question gets *low*, everything else *medium*.
+  A model that rejects the field is retried once without it instead of failing the send.
+- **Improve the prompt.** The star button rewrites what you typed into a brief — goal, givens,
+  constraints, the shape of the answer wanted — in your language, keeping every path, version and
+  error string. The burst button does the same automatically before every send and tags the message
+  *improved*. Either way it is one small chat request on your own key.
 - **Real cost per reply** — token counts and the provider's actual charge (`usage.x_ckey.cost`, ₫).
 - **500+ models** in a searchable picker, plus a filterable, sortable price list on the pricing page.
 - **Media studio** — four tabs, pictures, edits, clips and spoken audio, all generated with the

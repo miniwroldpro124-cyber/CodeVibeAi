@@ -6,7 +6,12 @@
 
   const CHAT_PREFIX = 'devchat.chats.v1';
   const PREF_KEY = 'devchat.prefs.v1';
+  // Only an id is kept here, and only to parse the right history before the
+  // session answers. Nothing from it is drawn until the server confirms the user.
+  const LAST_USER_KEY = 'devchat.lastuser.v1';
   const MAX_ATTACH_BYTES = 250 * 1024;
+  const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+  const SPLIT_BYTES = 100 * 1024;
   // Covers both a model that never answers and one that stalls mid-stream.
   const IDLE_TIMEOUT_MS = 90000;
 
@@ -71,6 +76,14 @@
     systemPrompt: '',
     temperature: 0.7,
     maxTokens: '',
+    // 'auto' lets the send decide how much thinking the question is worth; the
+    // other values are sent to the provider as they are.
+    effort: 'auto',
+    // Rewrite the prompt before sending it — one small request on the user's key.
+    refine: false,
+    // When on, an attachment over 100 KB is sent as consecutive parts instead of
+    // one giant message.
+    splitBig: false,
     collapsed: false
   };
 
@@ -124,11 +137,13 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try {
-        localStorage.setItem(key, JSON.stringify(state.conversations));
+        // Picture data URLs are display-only; keeping them would fill the quota
+        // after a couple of screenshots. The text that travelled is kept.
+        localStorage.setItem(key, JSON.stringify(state.conversations, (k, v) => (k === 'images' ? undefined : v)));
       } catch {
         toast('Storage full — older chats were not saved', true);
       }
-    }, 250);
+    }, 400);
   }
   function savePrefs() {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
@@ -479,8 +494,14 @@
     if (prompt) out.push({ role: 'system', content: prompt });
     conv.messages.slice(0, uptoIndex).forEach((m) => {
       if (m.role !== 'user' && m.role !== 'assistant') return;
-      if (!m.content) return;
-      out.push({ role: m.role, content: m.content });
+      if (!m.content && !(m.images?.length)) return;
+      if (m.role === 'user' && m.images?.length) {
+        const parts = [{ type: 'text', text: m.content || '' }];
+        for (const url of m.images) parts.push({ type: 'image_url', image_url: { url } });
+        out.push({ role: 'user', content: parts });
+      } else {
+        out.push({ role: m.role, content: m.content });
+      }
     });
     return out;
   }
@@ -514,6 +535,13 @@
     time.className = 'msg-time';
     time.textContent = formatTime(msg.ts || Date.now());
     meta.append(role, time);
+    if (msg.refined) {
+      const tag = document.createElement('span');
+      tag.className = 'msg-tag';
+      tag.textContent = 'improved';
+      tag.title = 'Rewritten from what you typed before sending';
+      meta.append(tag);
+    }
     body.appendChild(meta);
 
     if (msg.role === 'assistant' && (msg.reasoning || msg.thinking)) {
@@ -529,7 +557,7 @@
     if (msg.role === 'assistant') body.appendChild(actionsNode(msg, index));
 
     wrap.appendChild(body);
-    paintContent(content, msg, false);
+    paintContent(content, msg, false, Boolean(msg.thinking));
     return wrap;
   }
 
@@ -584,13 +612,36 @@
     note.textContent = bits.join(' · ');
   }
 
-  function paintContent(container, msg, final) {
-    // The reasoning stream repaints on every chunk too, and re-parsing an
-    // unchanged answer was pure waste, so only touch the markdown when the
-    // answer text or the final flag actually moved.
-    if (container._text !== msg.content || container._final !== final) {
+  function paintContent(container, msg, final, live = false) {
+    const streaming = live && Boolean(msg.thinking);
+    if (streaming) {
+      if (container._text !== msg.content) {
+        container._text = msg.content;
+        container.classList.add('streaming');
+        container.textContent = msg.content;
+      }
+      const caret = container.querySelector(':scope > .caret');
+      if (msg.content) {
+        if (!caret) container.appendChild(caretNode());
+        else if (container.lastElementChild !== caret) container.appendChild(caret);
+      } else if (caret) caret.remove();
+      const typing = container.querySelector(':scope > .typing');
+      if (msg.thinking && !msg.content) {
+        if (!typing) {
+          const dots = document.createElement('div');
+          dots.className = 'typing';
+          dots.innerHTML = '<i></i><i></i><i></i>';
+          container.appendChild(dots);
+        }
+      } else if (typing) typing.remove();
+      return;
+    }
+
+    if (container.classList.contains('streaming')) container.classList.remove('streaming');
+    if (container._text !== msg.content || container._final !== final || container._live) {
       container._text = msg.content;
       container._final = final;
+      container._live = false;
       renderMarkdown(container, msg.content);
       enhanceCodeBlocks(container, { autodetect: final });
     }
@@ -634,6 +685,7 @@
     for (let i = same; i < messages.length; i += 1) streamInner.appendChild(messageNode(messages[i], i));
     rendered = messages.slice();
 
+    streamInner.classList.toggle('long-thread', (conv?.messages?.length || 0) > 30);
     emptyEl.hidden = messages.length > 0;
     updateCost();
     updateSidebarActive();
@@ -675,8 +727,16 @@
 
   /* ---------------- sidebar ---------------- */
 
+  let convListSig = '';
+
   function renderConvList() {
     const query = $('#convSearchInput').value.trim().toLowerCase();
+    const sig = `${query}\u0000${state.activeId || ''}\u0000`
+      + state.conversations.map((c) => `${c.id}:${c.updatedAt || 0}:${c.title || ''}`).join('|');
+    // The list is rebuilt from scratch, including day headers. If nothing it shows
+    // has moved, rebuilding is pure cost — and it happens after every reply.
+    if (sig === convListSig) return;
+    convListSig = sig;
     const list = state.conversations.filter((c) =>
       !query ||
       (c.title || '').toLowerCase().includes(query) ||
@@ -954,12 +1014,16 @@
 
     const paint = (final = false) => {
       if (!contentEl) return;
-      paintContent(contentEl, msg, final);
+      paintContent(contentEl, msg, final, !final && msg.thinking);
       if (reasoningBox) {
         reasoningBox.classList.toggle('thinking', Boolean(msg.thinking));
         const head = reasoningBox.querySelector('.pulse');
         head.textContent = msg.thinking ? 'Thinking…' : 'Thought process';
-        reasoningBox.querySelector('.reasoning-body').textContent = msg.reasoning || '';
+        const rbody = reasoningBox.querySelector('.reasoning-body');
+        if (rbody._text !== msg.reasoning) {
+          rbody._text = msg.reasoning;
+          rbody.textContent = msg.reasoning || '';
+        }
         const dur = reasoningBox.querySelector('.dur');
         if (msg.reasoningMs) dur.textContent = `${(msg.reasoningMs / 1000).toFixed(1)}s`;
       }
@@ -972,15 +1036,15 @@
       stick();
     };
 
-    // Every paint re-parses and re-sanitises the whole answer, so its cost grows
-    // with length (measured: ~3.6ms at 3k chars, ~7.8ms at 12k). Slowing the
-    // refresh on long replies buys back main-thread time for scrolling and typing.
+    // While the answer is live it is painted as plain text, so a paint costs one
+    // textContent write instead of a full markdown parse. That makes a steady
+    // 50–80 ms cadence affordable even on a long reply; the expensive markdown
+    // and syntax pass happens once, when the stream ends.
     const paintDelay = () => {
       const n = msg.content.length + (msg.reasoning?.length || 0);
-      if (n > 16000) return 220;
-      if (n > 6000) return 150;
-      if (n > 2000) return 100;
-      return 70;
+      if (n > 32000) return 90;
+      if (n > 12000) return 70;
+      return 50;
     };
 
     const schedulePaint = () => {
@@ -1023,6 +1087,10 @@
     };
     const maxTokens = Number(prefs.maxTokens);
     if (maxTokens > 0) payload.max_tokens = maxTokens;
+    // One setting, two meanings: 'off' disables thinking, 'auto' picks a level from
+    // the shape of the request, and the rest are sent as they are.
+    const resolvedEffort = resolveEffort(conv.messages?.[assistantIndex - 1]?.content);
+    payload.reasoning_effort = resolvedEffort === 'off' ? 'none' : resolvedEffort;
 
     try {
       const res = await fetch(Auth.apiUrl('/api/chat'), {
@@ -1041,7 +1109,29 @@
           // tab should reopen the matching gate, not just print an error.
           Auth.guard({ status: res.status, data: parsed });
         } catch { /* keep the status text */ }
-        throw new Error(detail);
+        // A provider that does not know reasoning_effort says so in a 400. The
+        // answer is still worth having, so the field is dropped and sent again.
+        if (payload.reasoning_effort && res.status === 400 && /reasoning[_ ]effort/i.test(detail)) {
+          delete payload.reasoning_effort;
+          statusEl.textContent = 'this model ignores the effort setting — sent without it';
+          res = await fetch(Auth.apiUrl('/api/chat'), {
+            method: 'POST',
+            headers: Auth.authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(payload),
+            signal: state.controller.signal
+          });
+          if (!res.ok) {
+            let again = `HTTP ${res.status}`;
+            try {
+              const parsed = await res.json();
+              again = parsed.error || again;
+              Auth.guard({ status: res.status, data: parsed });
+            } catch { /* keep the status text */ }
+            throw new Error(again);
+          }
+        } else {
+          throw new Error(detail);
+        }
       }
 
       const reader = res.body.getReader();
@@ -1322,15 +1412,59 @@
 
   /* ---------------- sending ---------------- */
 
+  const CHUNK_HEADROOM = 600;
+
+  function attachmentLang(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return Object.keys(EXT_BY_LANG).find((k) => EXT_BY_LANG[k] === ext) || ext;
+  }
+
   function composeWithAttachments(text) {
-    if (!state.attachments.length) return text;
-    const blocks = state.attachments.map((file) => {
-      const ext = (file.name.split('.').pop() || '').toLowerCase();
-      const lang = Object.keys(EXT_BY_LANG).find((k) => EXT_BY_LANG[k] === ext) || ext;
-      return '```' + lang + ' ' + file.name + '\n' + file.text + '\n```';
-    });
-    const head = `Attached file${state.attachments.length > 1 ? 's' : ''}:\n\n${blocks.join('\n\n')}`;
+    const files = state.attachments.filter((f) => !f.image);
+    const images = state.attachments.filter((f) => f.image);
+    const blocks = files.map((file) =>
+      '```' + attachmentLang(file.name) + ' ' + file.name + '\n' + file.text + '\n```');
+    const notes = images.map((f) => `[image attached: ${f.name}]`);
+    const body = blocks.concat(notes);
+    if (!body.length) return text;
+    const head = `${body.length > 1 ? 'Attached files' : 'Attached file'}:\n\n${body.join('\n\n')}`;
     return text ? `${text}\n\n${head}` : head;
+  }
+
+  function splitFileText(text, limit) {
+    const parts = [];
+    let rest = text;
+    while (rest.length > limit) {
+      let cut = rest.lastIndexOf('\n', limit);
+      if (cut < limit * 0.5) cut = limit;
+      parts.push(rest.slice(0, cut));
+      rest = rest.slice(cut + 1);
+    }
+    if (rest.length) parts.push(rest);
+    return parts;
+  }
+
+  function composeParts(text) {
+    const files = state.attachments.filter((f) => !f.image);
+    const images = state.attachments.filter((f) => f.image);
+    const totalText = files.reduce((n, f) => n + f.text.length, 0);
+    const imageUrls = images.map((f) => f.image);
+    if (!prefs.splitBig || totalText <= SPLIT_BYTES) {
+      return [{ text: composeWithAttachments(text), images: imageUrls }];
+    }
+    const parts = [];
+    let lead = text;
+    for (const file of files) {
+      const chunks = splitFileText(file.text, SPLIT_BYTES - CHUNK_HEADROOM);
+      chunks.forEach((chunk, i) => {
+        const label = chunks.length > 1 ? `${file.name} (part ${i + 1}/${chunks.length})` : file.name;
+        const block = '```' + attachmentLang(file.name) + ' ' + label + '\n' + chunk + '\n```';
+        const head = i === 0 ? [lead, ...images.map((f) => `[image attached: ${f.name}]`)].filter(Boolean).join('\n\n') : '';
+        parts.push({ text: head ? `${head}\n\n${block}` : block, images: i === 0 ? imageUrls : [] });
+      });
+      lead = '';
+    }
+    return parts;
   }
 
   // Every request is paid for by the signed-in user's own key, so both the
@@ -1358,19 +1492,45 @@
       toast('Still generating — press Esc to stop it first', true);
       return;
     }
-    withKey(() => dispatch(text));
+    withKey(() => prepareAndDispatch(text));
   }
 
-  async function dispatch(text) {
+  // Auto-improve happens before the send, which is the one moment it can still be
+  // seen: the rewrite is what the bubble shows and what the provider is billed for.
+  async function prepareAndDispatch(text) {
+    let final = text;
+    let refined = false;
+    if (prefs.refine && text.length >= 12) {
+      statusEl.textContent = 'improving the prompt…';
+      const better = await rewritePrompt(text);
+      if (better && better.length >= 12) {
+        final = better;
+        refined = true;
+      }
+      statusEl.textContent = '';
+    }
+    const parts = composeParts(final);
+    const titleHint = final || text;
+    const names = state.attachments.map((f) => f.name);
+    clearAttachments();
+    inputEl.value = '';
+    autosize();
+    for (let i = 0; i < parts.length; i += 1) {
+      if (parts.length > 1) statusEl.textContent = `part ${i + 1} of ${parts.length}…`;
+      await dispatch(parts[i], refined && i === 0, { titleHint, names });
+    }
+    statusEl.textContent = '';
+  }
+
+  async function dispatch(part, refined = false, meta = {}) {
     window.Style?.play('send');
     const conv = ensureConv();
-    const attachedNames = state.attachments.map((f) => f.name);
-    const composed = composeWithAttachments(text);
-    clearAttachments();
-
     conv.model = conv.model || prefs.model;
-    conv.messages.push({ role: 'user', content: composed, ts: Date.now() });
-    if (!conv.title) conv.title = makeTitle(text || attachedNames[0] || 'New chat');
+    const userMessage = { role: 'user', content: part.text, ts: Date.now() };
+    if (part.images?.length) userMessage.images = part.images;
+    if (refined) userMessage.refined = true;
+    conv.messages.push(userMessage);
+    if (!conv.title) conv.title = makeTitle(meta.titleHint || part.text || meta.names?.[0] || 'New chat');
 
     const assistantIndex = conv.messages.length;
     conv.messages.push({
@@ -1379,8 +1539,6 @@
     });
 
     conv.updatedAt = Date.now();
-    inputEl.value = '';
-    autosize();
     renderConversation();
     renderConvList();
     saveChats();
@@ -1439,9 +1597,17 @@
     tray.replaceChildren();
     state.attachments.forEach((file, i) => {
       const chip = document.createElement('div');
-      chip.className = 'attach-chip';
+      chip.className = 'attach-chip' + (file.image ? ' attach-chip-image' : '');
+      if (file.image) {
+        const thumb = document.createElement('img');
+        thumb.className = 'attach-thumb';
+        thumb.alt = '';
+        thumb.src = file.image;
+        chip.appendChild(thumb);
+      }
       const label = document.createElement('span');
-      label.textContent = `${file.name} · ${(file.text.length / 1024).toFixed(1)} KB`;
+      const kb = ((file.image ? file.image.length : file.text.length) / 1024).toFixed(1);
+      label.textContent = `${file.name} · ${kb} KB`;
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.setAttribute('aria-label', `Remove ${file.name}`);
@@ -1461,19 +1627,58 @@
     $('#fileInput').value = '';
   }
 
+  // A pasted or dropped picture is read through FileReader because the CSP does
+  // not allow blob: images, then scaled down here: a 4 MB phone photo becomes a
+  // few hundred KB before it can ever reach a request.
+  function readImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('unreadable'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('unreadable'));
+        img.onload = () => {
+          const max = 1280;
+          const scale = Math.min(1, max / Math.max(img.width || 1, img.height || 1));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round((img.width || 1) * scale));
+          canvas.height = Math.max(1, Math.round((img.height || 1) * scale));
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function handleFiles(fileList) {
-    for (const file of fileList) {
+    const jobs = Array.from(fileList || []).map(async (file) => {
+      if (/^image\//.test(file.type || '')) {
+        if (file.size > MAX_IMAGE_BYTES) {
+          toast(`${file.name || 'image'} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB — skipped`, true);
+          return null;
+        }
+        try {
+          return { name: file.name || 'pasted-image.jpg', image: await readImage(file) };
+        } catch {
+          toast(`Could not read ${file.name || 'the image'}`, true);
+          return null;
+        }
+      }
       if (file.size > MAX_ATTACH_BYTES) {
         toast(`${file.name} is over ${MAX_ATTACH_BYTES / 1024} KB — skipped`, true);
-        continue;
+        return null;
       }
       try {
-        const text = await file.text();
-        state.attachments.push({ name: file.name, text });
+        return { name: file.name, text: await file.text() };
       } catch {
         toast(`Could not read ${file.name}`, true);
+        return null;
       }
-    }
+    });
+    const loaded = (await Promise.all(jobs)).filter(Boolean);
+    state.attachments.push(...loaded);
     renderAttachments();
     autosize();
   }
@@ -1491,6 +1696,7 @@
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean);
     const attachable = (file) => {
+      if (/^image\//.test(file.type || '')) return true;
       const name = String(file.name || '').toLowerCase();
       return exts.some((ext) => (ext.startsWith('.') ? name.endsWith(ext) : name === ext || name.endsWith(`/${ext}`)));
     };
@@ -1534,10 +1740,104 @@
       const others = files.filter((file) => !attachable(file));
       if (wanted.length) handleFiles(wanted);
       if (others.length) {
-        toast(others.some((file) => /^image\//.test(file.type))
-          ? 'A picture belongs in the Studio — drop it on the Picture tab there'
-          : `${others[0].name} is not a file this chat can read as text`, true);
+        toast(`${others[0].name} is not a file this chat can read`, true);
       }
+    });
+  }
+
+  /* ---------------- prompt improving ---------------- */
+
+  /* A model answers the question it was given, so a vague question buys a vague
+     answer. This rewriter asks for the same request as a brief: the goal, the
+     constraints that were actually stated, and the shape of the answer wanted —
+     without inventing facts, and in the language the visitor wrote in. */
+  const REWRITE_SYSTEM = 'You rewrite a developer\'s message into a better prompt for a coding assistant.\n'
+    + 'Rules:\n'
+    + '1. Keep every concrete detail the writer gave: file paths, names, versions, error text, commands,\n'
+    + '   numbers. Never invent a fact, a library, a requirement or a constraint that was not there.\n'
+    + '2. Say the goal first, then what is given, then what must not change, then the shape of the\n'
+    + '   answer wanted (fix + explanation, patch, options, tests) when the writer implied it.\n'
+    + '3. Make the task checkable: if the request is ambiguous, name the assumption the shortest correct\n'
+    + '   answer would make instead of asking a question.\n'
+    + '4. Write in the same language as the message. Keep code, identifiers and error text verbatim.\n'
+    + '5. Output only the rewritten prompt — no preamble, no quotation marks, no bullet list, no\n'
+    + '   explanation of what you changed. Stay under 200 words unless the original was longer.';
+
+  // A model may wrap the answer in a fence or open with "Here is the prompt:".
+  // Neither belongs in the textarea or in the message it becomes.
+  function cleanRewrite(text) {
+    return String(text || '')
+      .replace(/^[\s\S]*?```(?:\w*)\n?([\s\S]*?)```[\s\S]*$/, '$1')
+      .replace(/^\s*(?:prompt|here(?:'s| is) the (?:improved|better|rewritten) prompt)\s*[:\-]\s*/i, '')
+      .replace(/^["'\u201c]+|["'\u201d]+$/g, '')
+      .trim()
+      .slice(0, 6000);
+  }
+
+  // The last few turns go along as context, so "make it faster" becomes a request
+  // about the function the assistant just wrote rather than a floating sentence.
+  async function rewritePrompt(text) {
+    const conv = activeConv();
+    const tail = (conv?.messages || [])
+      .slice(-4)
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content)
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 700)}`)
+      .join('\n');
+    const ask = tail ? `Conversation so far:\n${tail}\n\nMessage to rewrite:\n${text}` : text;
+    try {
+      const res = await Auth.api('/api/chat', {
+        method: 'POST',
+        body: {
+          stream: false,
+          model: prefs.model,
+          temperature: 0.4,
+          messages: [{ role: 'system', content: REWRITE_SYSTEM }, { role: 'user', content: ask }]
+        }
+      });
+      if (!res.ok) return null;
+      const answer = res.data?.choices?.[0]?.message?.content;
+      const cleaned = cleanRewrite(typeof answer === 'string' ? answer : '');
+      return cleaned.length >= 12 ? cleaned : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Auto is a judgement about the request, not a coin toss: a pasted trace or a
+  // refactor is worth thinking about, a one-line question is not.
+  function resolveEffort(text) {
+    if (prefs.effort !== 'auto') return prefs.effort;
+    const value = String(text || '');
+    if (value.length > 600 || /```/.test(value)
+      || /\b(error|stack|trace|exception|debug|refactor|migrat|architecture|optimi[sz]e|race|deadlock|memory leak|security|vulnerab)\b/i.test(value)) {
+      return 'high';
+    }
+    return value.length < 90 ? 'low' : 'medium';
+  }
+
+  async function improveNow() {
+    const text = inputEl.value.trim();
+    if (!text) {
+      toast('Write what you want first — the rewriter needs a starting point', true);
+      inputEl.focus();
+      return;
+    }
+    if (state.streaming) {
+      toast('Still generating — wait for the answer to finish', true);
+      return;
+    }
+    withKey(async () => {
+      statusEl.textContent = 'rewriting…';
+      const better = await rewritePrompt(text);
+      statusEl.textContent = '';
+      if (!better) {
+        toast('The rewriter did not answer — your text is untouched', true);
+        return;
+      }
+      inputEl.value = better;
+      autosize();
+      inputEl.focus();
+      toast('Rewritten — send it when you are happy');
     });
   }
 
@@ -1567,6 +1867,44 @@
   function bindEvents() {
     sendBtn.addEventListener('click', () => send());
     stopBtn.addEventListener('click', stopStreaming);
+
+    // Effort and the rewriter live beside the composer, because they change how the
+    // next send behaves, not how the whole account behaves.
+    const effortSel = $('#effortSel');
+    const autoBtn = $('#autoImproveBtn');
+    effortSel.value = prefs.effort || 'auto';
+    const paintAuto = () => {
+      autoBtn.setAttribute('aria-pressed', String(Boolean(prefs.refine)));
+      autoBtn.classList.toggle('on', Boolean(prefs.refine));
+    };
+    paintAuto();
+    effortSel.addEventListener('change', () => {
+      prefs.effort = effortSel.value;
+      savePrefs();
+    });
+    $('#improveBtn').addEventListener('click', improveNow);
+    autoBtn.addEventListener('click', () => {
+      prefs.refine = !prefs.refine;
+      paintAuto();
+      savePrefs();
+      toast(prefs.refine
+        ? 'Auto-improve is on — each prompt is rewritten before it is sent'
+        : 'Auto-improve is off');
+    });
+    const splitBtn = $('#splitBtn');
+    const paintSplit = () => {
+      splitBtn.setAttribute('aria-pressed', String(Boolean(prefs.splitBig)));
+      splitBtn.classList.toggle('on', Boolean(prefs.splitBig));
+    };
+    paintSplit();
+    splitBtn.addEventListener('click', () => {
+      prefs.splitBig = !prefs.splitBig;
+      paintSplit();
+      savePrefs();
+      toast(prefs.splitBig
+        ? 'Large files are on — anything over 100 KB is sent in parts'
+        : 'Large-file splitting is off — files are sent whole');
+    });
     $('#newChatBtn').addEventListener('click', newConversation);
     $('#clearAllBtn').addEventListener('click', () => {
       if (!state.conversations.length) return toast('Nothing to delete');
@@ -1686,6 +2024,15 @@
       }
     });
     inputEl.addEventListener('paste', (event) => {
+      const images = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.type?.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (images.length) {
+        event.preventDefault();
+        handleFiles(images);
+        return;
+      }
       const text = event.clipboardData?.getData('text');
       if (text && text.length > 3000 && !inputEl.value.length) {
         event.preventDefault();
@@ -1808,29 +2155,58 @@
 
   /* ---------------- boot ---------------- */
 
+  let enteredFor = null;
+
   function enterApp(user) {
+    const switched = enteredFor !== user.id;
     state.user = user;
+    try { localStorage.setItem(LAST_USER_KEY, JSON.stringify({ id: user.id })); } catch { /* ignore */ }
+    if (switched) {
+      enteredFor = user.id;
+      if (preloadedFor && preloadedFor === user.id) {
+        // Already parsed at boot; only the interrupted turns need touching.
+        for (const conv of state.conversations) {
+          for (const msg of conv.messages || []) {
+            if (!msg.thinking) continue;
+            msg.thinking = false;
+            if (!msg.content && !msg.reasoning && !msg.error) msg.error = 'Interrupted before any output arrived.';
+          }
+        }
+        state.activeId = state.activeId || state.conversations[0]?.id || null;
+      } else {
+        loadChats();
+      }
+      preloadedFor = user.id;
+      renderConversation();
+      // Load the catalogue after the thread is on screen, so typing and scrolling
+      // never wait for a network round trip.
+      setTimeout(() => {
+        loadModels().then(() => {
+          const conv = activeConv();
+          if (conv && !conv.model) conv.model = prefs.model;
+        });
+      }, 0);
+    }
     renderAccount();
-    loadChats();
     renderConvList();
-    renderConversation();
-    loadModels().then(() => {
-      const conv = activeConv();
-      if (conv && !conv.model) conv.model = prefs.model;
-    });
   }
+
+  let preloadedFor = null;
 
   async function boot() {
     applyTheme();
     bindEvents();
     autosize();
+    preloadChats();
     renderAccount();
-    renderConvList();
-    renderConversation();
+    // Preloaded history is parsed, not drawn: until the server says who this is,
+    // showing it could hand one account's chat to the next person at the machine.
+    if (!preloadedFor) {
+      renderConvList();
+      renderConversation();
+    }
 
     Auth.onSession((user) => {
-      // A null user means the session is gone. Reloading is the only way to be
-      // certain no previous account's conversations are left on screen.
       if (!user) {
         location.reload();
         return;
@@ -1840,6 +2216,16 @@
 
     await Auth.boot({ requireKey: true });
     if (Auth.signedIn) inputEl.focus();
+  }
+
+  function preloadChats() {
+    const cached = readStore(LAST_USER_KEY, null);
+    if (!cached?.id) return;
+    const stored = readStore(`${CHAT_PREFIX}:u${cached.id}`, null);
+    if (Array.isArray(stored)) {
+      preloadedFor = cached.id;
+      state.conversations = stored;
+    }
   }
 
   boot();

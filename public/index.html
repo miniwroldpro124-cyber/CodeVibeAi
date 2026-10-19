@@ -7,7 +7,7 @@
 <title>DevChat — AI pair programmer</title>
 <link rel="icon" type="image/jpeg" href="/logo-mark.jpg">
 <link rel="stylesheet" href="/vendor/atom-one-dark.min.css">
-<link rel="stylesheet" href="/styles.css?v=15">
+<link rel="stylesheet" href="/styles.css?v=18">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
 <script src="/watchdog.js" data-mode="warn" defer></script>
@@ -179,6 +179,22 @@
       <div class="composer" id="composer">
         <textarea id="promptInput" rows="1" placeholder="Ask anything, paste an error, or attach a file and send it alone…" spellcheck="false"></textarea>
         <div class="composer-actions">
+          <select class="effort-sel" id="effortSel" title="Reasoning effort" aria-label="Reasoning effort">
+            <option value="auto">Effort: auto</option>
+            <option value="off">Effort: off</option>
+            <option value="low">Effort: low</option>
+            <option value="medium">Effort: medium</option>
+            <option value="high">Effort: high</option>
+          </select>
+          <button class="icon-btn" id="improveBtn" title="Rewrite my prompt before sending" aria-label="Improve prompt">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z"/></svg>
+          </button>
+          <button class="icon-btn" id="autoImproveBtn" title="Auto-improve every prompt before sending" aria-label="Auto-improve prompts" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v4M12 16v4M4 12h4M16 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>
+          </button>
+          <button class="icon-btn" id="splitBtn" title="Split attached files over 100 KB into parts" aria-label="Split large files" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><path d="M8.2 7.4L20 18M8.2 16.6L20 6"/></svg>
+          </button>
           <span class="char-count" id="charCount" hidden></span>
           <button class="icon-btn" id="attachBtn" title="Attach files — an attachment alone is enough to send" aria-label="Attach a code file">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11l-8.5 8.5a5 5 0 01-7-7L13 4a3.5 3.5 0 015 5l-8.4 8.4a2 2 0 01-3-3L14 7"/></svg>
@@ -205,9 +221,9 @@
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
-<script src="/auth.js?v=15"></script>
-<script src="/zip.js?v=15"></script>
-<script src="/style.js?v=15"></script>
-<script src="/app.js?v=15"></script>
+<script src="/auth.js?v=18"></script>
+<script src="/zip.js?v=18"></script>
+<script src="/style.js?v=18"></script>
+<script src="/app.js?v=18"></script>
 </body>
 </html>

@@ -137,7 +137,10 @@
       placeholder: 'A drone shot over a pine forest at sunrise, mist in the valleys, slow forward motion',
       note: 'A clip is a job, not an answer: the request only returns a task id, then this page asks for it'
         + ' every few seconds until the file is ready. Keep the tab open — closing it does not cancel the'
-        + ' job, it only stops you watching it.'
+        + ' job, it only stops you watching it.',
+      polish: true,
+      polishNote: 'Turns a one-line idea into a shot the model can film: subject, action, camera, light.'
+        + ' One small chat request on your key.'
     },
     voice: {
       title: 'Have it read out loud',
@@ -774,15 +777,43 @@
 
   /* ------------------------------------------------------------- prompt writing */
 
+  // Each brief is the whole instruction. The model is not asked to explain itself and
+  // is never shown a template with blanks, because a filled-in template reads as a
+  // prompt written by the template rather than by the person who typed the request.
   const POLISH = {
-    image: 'You write prompts for still-image AI models. Take the request below and return ONE improved'
-      + ' prompt: subject first, then medium and style, lighting, composition and lens, colour, mood, and'
-      + ' end with what to avoid. Under 90 words. Plain text on one line — no preamble, no quotation marks,'
-      + ' no bullet points, no explanation of your choices.',
-    edit: 'You write instructions for an image model that has been handed a real photograph and told to'
-      + ' change it. Rewrite the request below as ONE editing instruction: say what to change, say what must'
-      + ' stay identical (faces, pose, framing, any text in the picture), and say the finish wanted. Under'
-      + ' 70 words. Plain text on one line — no preamble, no quotation marks, no list.'
+    image: 'You rewrite requests into prompts for a still-image generator. Return ONE prompt, nothing else.'
+      + '\n\nRules:'
+      + '\n1. Lead with the subject and what it is doing, concretely: who or what, where, at what moment.'
+      + '\n2. Then the medium and style (photo, oil, 3D render, illustration), the camera or lens if photographic,'
+      + ' the framing and angle, the lighting and time of day, the palette, and the mood — in that order.'
+      + '\n3. Keep every specific the person gave: names, colours, numbers, places, brands, text that must'
+      + ' appear. Never swap a specific for a generic word.'
+      + '\n4. Where the request is silent, choose the detail that serves the subject best rather than listing'
+      + ' alternatives. Do not add a second subject or a second scene.'
+      + '\n5. End with the negative: what must not appear (extra limbs, watermark, blur, distorted text).'
+      + '\n6. 45 to 110 words, one paragraph, present tense, plain text. No preamble, no quotes, no labels,'
+      + ' no bullet points, no explanation. Write it in the language the request was written in.',
+    edit: 'You rewrite requests into ONE editing instruction for an image model that has been handed a real'
+      + ' photograph. The photograph is already loaded; do not describe it back.\n\nRules:'
+      + '\n1. Say what to change, and where in the frame, in concrete visual terms — not the feeling, the pixels.'
+      + '\n2. Say what must stay identical: faces and identity, pose, framing, perspective, lighting direction,'
+      + ' and any text visible in the picture.'
+      + '\n3. Say how the result should look: finish, colour, grain, sharpness, whether it should still read as'
+      + ' a photograph.'
+      + '\n4. Keep every specific the person gave. Choose a definite value where they left a gap.'
+      + '\n5. 30 to 80 words, one paragraph, imperative mood, plain text. No preamble, no quotes, no labels,'
+      + ' no list, no explanation of your choices. Same language as the request.',
+    video: 'You rewrite requests into prompts for a text-to-video model. Return ONE prompt, nothing else.'
+      + '\n\nRules:'
+      + '\n1. Open with the shot: subject, action, and setting in one sentence, concrete enough to film.'
+      + '\n2. Then camera: shot size, movement (locked off, slow push, tracking, handheld), angle, lens.'
+      + '\n3. Then light, palette, mood, and the pace of the action.'
+      + '\n4. Describe motion over time — what happens in the first second and what changes by the end.'
+      + ' A video prompt is a short scene, not a still.'
+      + '\n5. Keep every specific the person gave. Choose one definite outcome rather than alternatives.'
+      + '\n6. End with the negative: warped faces, extra fingers, flicker, morphing, watermark.'
+      + '\n7. 45 to 110 words, one paragraph, present tense, plain text. No preamble, no quotes, no labels,'
+      + ' no list, no explanation. Same language as the request.'
   };
 
   // A model will wrap its answer in a code fence or a polite sentence. Neither is
