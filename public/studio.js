@@ -331,9 +331,14 @@
         : 'price unknown for this model';
       return;
     }
-    const billed = list * (1 + (Number(state.markupPercent) || 0) / 100);
     const times = state.mode === 'image' && pictureCount() > 1 ? ` for ${pictureCount()} pictures` : '';
-    els.priceChip.textContent = `${vnd(list)} list${times} · ${vnd(billed)} with the ${state.markupPercent}% markup`;
+    // The provider's rate is the price, because that is the only number the
+    // caller's key moves. An admin margin is an internal what-if, so it is named as
+    // one and never presented beside the price as if it were part of the charge.
+    const margin = Number(state.markupPercent) || 0;
+    els.priceChip.textContent = margin > 0
+      ? `${vnd(list)}${times} charged to your key · the admin margin of ${margin}% is not a charge`
+      : `${vnd(list)}${times} charged to your key`;
   }
 
   function updateCeilingNote() {
@@ -513,16 +518,16 @@
   /* ------------------------------------------------------------- price confirm */
 
   function askConfirm() {
+    // Quoted at the provider's rate: this is the number the key is charged, and a
+    // button that adds an internal margin to it would be asking for consent to a
+    // price nobody pays.
     const list = listPrice('edit');
-    const billed = list === null
-      ? null
-      : list * (1 + (Number(state.markupPercent) || 0) / 100);
     els.confirmText.textContent = list === null
       ? `The provider lists no price for ${selectFor('edit').value}, so this edit cannot be quoted in advance.`
         + ' It is charged to your own key when the model answers. Confirm to send it anyway.'
-      : `One edit on ${selectFor('edit').value} is ${vnd(list)} at the provider and ${vnd(billed)} with the`
-        + ` ${state.markupPercent}% markup, charged to your own key. Nothing is sent until you confirm.`;
-    els.confirmBtn.textContent = list === null ? 'Send it anyway' : `Confirm — ${vnd(billed || 0)}`;
+      : `One edit on ${selectFor('edit').value} costs ${vnd(list)} at the provider, charged to your own key.`
+        + ' Nothing is sent until you confirm.';
+    els.confirmBtn.textContent = list === null ? 'Send it anyway' : `Confirm — ${vnd(list)}`;
     els.confirmBox.hidden = false;
     els.goBtn.textContent = COPY.edit.button;
   }
@@ -599,8 +604,11 @@
 
   function showPictures(images, model, data, alt) {
     els.resultsCard.hidden = false;
+    // baseCost is what the provider put on the caller's key. The server also
+    // returns a marked-up figure for the admin dashboard, and printing it here
+    // would show a number nobody paid as if it were the price of this picture.
     els.resultsSub.textContent = `${model} · ${images.length} picture${images.length === 1 ? '' : 's'} ·`
-      + ` ${vnd(data.baseCost)} at the provider · ${vnd(data.billedCost)} with markup`;
+      + ` ${vnd(data.baseCost)} charged to your key`;
     images.forEach((image, index) => els.gallery.append(pictureFigure(image, index, model, alt)));
   }
 

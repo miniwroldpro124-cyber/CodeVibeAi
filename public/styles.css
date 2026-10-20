@@ -43,6 +43,7 @@ html[data-theme="dark"] {
   --accent-text: #04231f;
   --danger: #fb7185;
   --ok: #4ade80;
+  --warn: #f0b264;
   --user-bubble: rgba(56, 189, 248, .1);
   --glass: saturate(150%) blur(16px);
   --shadow: 0 22px 50px -20px rgba(0, 0, 0, .75), 0 2px 8px rgba(0, 0, 0, .35);
@@ -73,6 +74,7 @@ html[data-theme="light"] {
   --accent-text: #ffffff;
   --danger: #dc2626;
   --ok: #15803d;
+  --warn: #b45309;
   --user-bubble: rgba(13, 148, 136, .07);
   --glass: saturate(160%) blur(14px);
   --shadow: 0 20px 44px -22px rgba(20, 33, 58, .3), 0 1px 3px rgba(20, 33, 58, .08);
@@ -492,6 +494,9 @@ html[data-theme="light"] .i-moon { display: none; }
   transition: color .2s, border-color .2s;
 }
 .cost-chip:hover { color: var(--accent); border-color: var(--accent); }
+/* The label belongs to the number: an amount on its own reads as a price quote
+   rather than as money the provider already took from the caller's key. */
+.cost-chip em { font-style: normal; font-weight: 500; opacity: .58; margin-right: 6px; }
 
 /* ---------- picker panel ---------- */
 
@@ -564,6 +569,15 @@ html[data-theme="light"] .i-moon { display: none; }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .setting input[type="range"] { width: 100%; accent-color: var(--accent); height: 22px; cursor: pointer; }
+/* The cleanup choice is the one control in this pane that is a sentence rather than
+   a number, so it takes the field look at its own width. */
+.sp-select {
+  padding: 9px 11px; background: var(--panel-solid); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12.5px; outline: none; cursor: pointer;
+  transition: border-color .16s, box-shadow .16s;
+}
+.sp-select:focus { border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .setting-row { display: flex; gap: 18px; }
 .setting-check {
   display: flex; align-items: flex-start; gap: 10px;
@@ -1308,6 +1322,26 @@ html[data-theme="light"] .md code:not(pre code) { color: #0a6e64; }
 #pwMsg.ok { color: var(--accent); }
 #pwMsg.bad { color: var(--danger); }
 
+/* ---------- spending limits ---------- */
+
+.budget-grid { display: flex; gap: 14px; }
+.budget-cell { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.budget-cell > span { font-size: 11px; font-weight: 600; color: var(--muted); }
+.budget-cell input {
+  width: 100%; padding: 9px 11px;
+  background: var(--panel-solid); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 12.5px; outline: none;
+  transition: border-color .16s, box-shadow .16s;
+}
+.budget-cell input:focus { border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* The running total is the server's number, so it is set apart from the inputs
+   the visitor is free to type anything into. */
+#budgetSpent { font-family: var(--mono); font-size: 11.5px; color: var(--text-soft); }
+#budgetSpent.near { color: var(--warn, #d9822b); }
+#budgetMsg.ok { color: var(--accent); }
+#budgetMsg.bad { color: var(--danger); }
+
 /* ---------- sign-in / key overlay ---------- */
 
 html.ov-open, html.ov-open body { overflow: hidden; }
@@ -1638,32 +1672,6 @@ table.data .empty-row td { text-align: center; color: var(--muted); padding: 24p
   .ov-card { padding: 22px 19px 14px; }
   .card { padding: 16px; }
 }
-
-/* ---------- inspector guard ---------- */
-
-.guard-banner {
-  position: fixed; z-index: 300; top: 14px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 14px;
-  max-width: min(94vw, 660px);
-  padding: 9px 10px 9px 16px; border-radius: 999px;
-  background: var(--panel-solid);
-  border: 1px solid color-mix(in srgb, var(--danger) 65%, var(--border));
-  box-shadow: var(--shadow);
-  font-size: 12.5px; line-height: 1.4; color: var(--text);
-}
-.guard-text { flex: 1; }
-.guard-close {
-  flex: none; padding: 5px 11px; border-radius: 999px;
-  font-size: 11.5px; font-weight: 650; color: var(--text-soft);
-  background: var(--panel-2); border: 1px solid var(--border);
-  transition: color .14s, background .14s, border-color .14s;
-}
-.guard-close:hover { color: var(--text); background: var(--hl); border-color: var(--accent); }
-
-/* Blurred rather than removed: the layout must not jump when tools open. */
-.inspector-open [data-guard="secret"] { filter: blur(7px); user-select: none; }
-
-.inspector-locked body > :not(.guard-banner) { visibility: hidden; }
 
 /* ---------- media studio ---------- */
 

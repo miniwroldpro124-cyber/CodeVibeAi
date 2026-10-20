@@ -9,7 +9,6 @@
 <link rel="stylesheet" href="/styles.css?v=18">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
-<script src="/watchdog.js" data-mode="warn" defer></script>
 </head>
 <body>
 
@@ -33,19 +32,21 @@
   <div class="page-body">
 
     <section class="card">
-      <h2>Markup</h2>
+      <h2>Simulated margin</h2>
       <p class="card-sub">
-        Applied to every cost DevChat reports, on top of the ckey.vn list price. It changes what the
-        dashboard and the calculator show — it never changes what the provider charges a user's own key.
+        A what-if number, kept for this dashboard and the price list only. It is applied on top of the
+        ckey.vn list price to fill the “resale” columns. Nothing is collected from a user on a
+        bring-your-own-key request, so this changes no charge and no stop: the spending limits an account
+        sets are counted against what the provider actually took from their own key.
       </p>
       <div class="field-grid">
         <label class="field">
-          <span>Markup <b id="markupVal">20</b>%</span>
-          <input type="range" id="markup" min="0" max="200" step="5" value="20">
+          <span>Simulated margin <b id="markupVal">0</b>%</span>
+          <input type="range" id="markup" min="0" max="200" step="5" value="0">
         </label>
         <label class="field">
           <span>Exact percent</span>
-          <input type="number" id="markupNum" min="0" max="1000" step="0.5" value="20">
+          <input type="number" id="markupNum" min="0" max="1000" step="0.5" value="0">
         </label>
         <div class="field">
           <span>&nbsp;</span>
@@ -105,8 +106,10 @@
     <section class="card">
       <h2>Usage &amp; spend</h2>
       <p class="card-sub">
-        <span id="rangeLabel">Last 30 days</span>. “Actual” is what the provider charged users' keys;
-        “billed” is that plus the markup.
+        <span id="rangeLabel">Last 30 days</span>. “Charged to users’ keys” is the real money — what the
+        provider took from each account’s own key. “Simulated resale” applies the margin set below to
+        that same usage so you can see what reselling would earn; nothing on this site collects it, and
+        no spending limit counts it.
       </p>
       <div class="filter-bar">
         <button type="button" class="mini-btn" data-days="1">24h</button>
@@ -138,8 +141,8 @@
               <th>API key</th>
               <th class="num">Requests</th>
               <th class="num">Tokens</th>
-              <th class="num">Actual</th>
-              <th class="num">Billed</th>
+              <th class="num">Charged to key</th>
+              <th class="num">Simulated resale</th>
               <th>Last seen</th>
               <th>Sessions</th>
               <th></th>
@@ -152,7 +155,7 @@
 
     <section class="card">
       <h2>Spend by user</h2>
-      <p class="card-sub">Ordered by billed cost over the selected range.</p>
+      <p class="card-sub">Ordered by what the provider charged over the selected range.</p>
       <div class="table-wrap">
         <table class="data">
           <thead>
@@ -162,8 +165,8 @@
               <th class="num">Failed</th>
               <th class="num">In tokens</th>
               <th class="num">Out tokens</th>
-              <th class="num">Actual</th>
-              <th class="num">Billed</th>
+              <th class="num">Charged to key</th>
+              <th class="num">Simulated resale</th>
             </tr>
           </thead>
           <tbody id="byUserRows"></tbody>
@@ -181,8 +184,8 @@
               <th class="num">Requests</th>
               <th class="num">In tokens</th>
               <th class="num">Out tokens</th>
-              <th class="num">Actual</th>
-              <th class="num">Billed</th>
+              <th class="num">Charged to key</th>
+              <th class="num">Simulated resale</th>
             </tr>
           </thead>
           <tbody id="byModelRows"></tbody>
@@ -192,8 +195,9 @@
 
     <section class="card">
       <h2>Recent requests</h2>
-      <p class="card-sub">The last 40, newest first. The billed figure here is the markup that was in
-        force when each request ran, not today's rate.</p>
+      <p class="card-sub">The last 40, newest first. “Charged to key” is what the provider took for that
+        request. “Resale (then)” applies the simulated margin that was in force when it ran, not today’s
+        rate, so the two columns only line up while the margin stays put.</p>
       <div class="table-wrap">
         <table class="data">
           <thead>
@@ -202,9 +206,9 @@
               <th>User</th>
               <th>Model</th>
               <th class="num">Tokens</th>
-              <th class="num">Actual</th>
-              <th class="num">Billed (then)</th>
-              <th class="num">Estimate</th>
+              <th class="num">Charged to key</th>
+              <th class="num">Resale (then)</th>
+              <th class="num">Quote (list)</th>
               <th class="num">Time</th>
               <th>Status</th>
             </tr>

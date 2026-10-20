@@ -15,7 +15,7 @@
 
   const state = {
     models: [],
-    markupPercent: 20,
+    markupPercent: 0,
     live: false,
     query: '',
     sortIndex: 0
@@ -34,7 +34,6 @@
     sortBtn: $('#sortBtn'),
     rows: $('#rows'),
     count: $('#count'),
-    listMarkup: $('#listMarkup'),
     calcSub: $('#calcSub')
   };
 
@@ -80,13 +79,18 @@
       return;
     }
 
+    // The provider's own rate leads, because that is the number the caller's key
+    // moves. A margin is arithmetic about a price this site does not apply, so it
+    // is shown only when one is set and is labelled as the what-if it is.
+    const margin = Number(data.markupPercent) || 0;
     const cells = [
-      ['hero', vnd(data.perRequestMarked), `Per request · +${data.markupPercent}%`],
-      ['', vnd(data.perRequestBase), 'Per request · list price'],
-      ['', vnd(data.totalMarked), `Monthly · ${int(data.requests)} requests`],
-      ['', vnd(data.totalBase), 'Monthly at list price'],
-      ['', vnd(data.markupGain), `Markup adds / month`]
+      ['hero', vnd(data.perRequestBase), 'Per request · charged to your key'],
+      ['', vnd(data.totalBase), `Monthly · ${int(data.requests)} requests`]
     ];
+    if (margin > 0) {
+      cells.push(['', vnd(data.totalMarked), `Monthly with a ${margin}% margin · what-if, not a charge`]);
+      cells.push(['', vnd(data.markupGain), `A ${margin}% margin would add / month`]);
+    }
     els.results.innerHTML = cells.map(([cls, value, label]) => `
       <div class="result ${cls}">
         <b>${esc(value)}</b>
@@ -177,7 +181,6 @@
     els.markup.max = String(Math.max(200, Math.ceil(state.markupPercent)));
     els.markup.value = String(state.markupPercent);
     els.markupVal.textContent = String(state.markupPercent);
-    els.listMarkup.textContent = String(state.markupPercent);
     renderModelOptions();
     renderList();
 
@@ -195,7 +198,6 @@
 
     els.markup.addEventListener('input', () => {
       els.markupVal.textContent = els.markup.value;
-      els.listMarkup.textContent = els.markup.value;
       renderList();
       scheduleEstimate();
     });

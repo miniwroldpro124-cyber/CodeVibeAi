@@ -134,7 +134,9 @@ Settings live in `.env` (copy `.env.example` to start):
 | `ADMIN_PASSWORD`        | —                         | First-run password, 12+ characters. Empty means generate and print one. |
 | `ADMIN_REAUTH`          | `sensitive`               | Step-up password prompt: `sensitive`, `always`, or `off`.   |
 | `ADMIN_REAUTH_MINUTES`  | `10`                      | How long a sign-in or confirmation counts as recent (1–240).|
-| `MASTER_KEY`            | —                         | 32 bytes of base64 that decrypt stored keys. Empty means generate `data/master.key`. |
+| `MASTER_KEY`            | —                         | 32 bytes of base64 that decrypt stored keys. Empty means generate `data/master.key`. Changing it takes the rotation pass below — `npm run admin -- --rotate-master`. |
+| `MASTER_KEY_PREV`       | —                         | The value being retired, set only for the length of a rotation so rows sealed with it can be read and rewritten. Remove it afterwards. |
+| `HASH_CONCURRENCY`      | `3`                       | How many password hashes may run at once (1–8). Argon2id holds ~19 MB each, so this is a memory ceiling for sign-ins, not a speed setting. |
 | `TURSO_URL`             | —                         | Hosted database URL (`libsql://…`). Set it and the app uses that instead of `data/devchat.db` — and `MASTER_KEY` stops being optional. |
 | `TURSO_TOKEN`           | —                         | API token for that database. Required with `TURSO_URL`.        |
 | `TURSO_TIMEOUT_MS`      | `10000`                   | How long one database round trip may take.                     |
@@ -207,7 +209,19 @@ NODE_TLS_REJECT_UNAUTHORIZED=0 node .smoketest/hosted-run.mjs     # the Vercel f
 node .smoketest/boot-guard.mjs                                   # a function with no database refuses
 node .smoketest/migrate-run.mjs                                  # the copy into a hosted database
 node .smoketest/limits-run.mjs                                   # the anti-abuse layer, over two instances
+node .smoketest/budget-run.mjs                                   # money gates, on the provider charge
+node .smoketest/chatstore-run.mjs                                # the browser store that holds chat history
 ```
+
+`budget-run.mjs` is the one that guards the honesty of every cost on the site: it sets a simulated
+margin high enough that a ceiling read from `billed_cost` would stop the first request, then proves
+the wall stopped at the provider's own charge instead — and that a refused request never writes a
+usage row, so nothing is invented as spend.
+
+`chatstore-run.mjs` loads `public/chatstore.js` against a hand-made IndexedDB and a hand-made
+`localStorage` and drives the orders in which a history can be lost: a copy that is deleted before it
+has been read back, a database that accepts a write and keeps nothing, a browser that will not open
+the database at all. Every case ends with the chats still readable.
 
 `NODE_TLS_REJECT_UNAUTHORIZED=0` is there because the fake provider answers over HTTPS with a
 self-signed certificate; it is a property of the harness, not of the app. `hosted-run.mjs` also
@@ -394,9 +408,34 @@ clone.
 - Sessions are random 32-byte tokens, stored only as a SHA-256 hash, delivered in an `httpOnly`,
   `SameSite=Lax` cookie, and valid for 30 days. Changing or resetting a password signs that user
   out everywhere.
-- Passwords use scrypt (N=16384, r=8) with a per-user salt and a constant-time compare.
-- Each `sk-` key is encrypted with AES-256-GCM before it touches the database. The browser is only
-  ever shown a masked hint, e.g. `sk-b27••••••62a6`, and the stored value is never returned.
+- Passwords are hashed with Argon2id (19 MiB, 2 passes) where the runtime offers it, and scrypt
+  N=131072 where it does not. The hash says how it was made, so accounts created under the older
+  scrypt N=16384 setting still sign in — and a successful sign-in rewrites their hash at the current
+  cost, without signing them out. `npm run admin -- --list` shows nothing about the hash; the
+  upgrade is silent and needs no migration.
+- A key does not have to be stored at all. The key box asks **"Use for this tab only"** first and
+  puts **"Save it on the server"** underneath it, so pressing Enter never persists anything. A
+  tab-only key lives in one variable in the page: it travels in the `X-DevChat-Key` header of the
+  request that needs it, is never written to `localStorage`, IndexedDB, a cookie, a URL or the
+  server, is never repeated in a response, an error message or the audit log, and is gone when the
+  tab reloads or the user signs out. The session cookie — not the header — still decides which
+  account the request belongs to, so the usage row, the budget and the limits all land on the person
+  who is signed in. `npm run test:keys` checks each of those claims.
+- A saved key is the advanced mode: encrypted with AES-256-GCM before it touches the database, with
+  the ciphertext bound to the row that holds it, so a blob copied onto another account does not
+  decrypt. The browser is only ever shown the last four characters, e.g. `sk-••••••••62a6`, and the
+  stored value is never returned. Removing it takes the **Remove** button in Settings, which asks
+  first.
+- Each stored key also records which `MASTER_KEY` sealed it, which is what makes that key rotatable:
+
+  ```bash
+  npm run admin -- --rotate-master            # shows what would be rewritten, changes nothing
+  npm run admin -- --rotate-master --apply    # reads with MASTER_KEY_PREV, writes with MASTER_KEY
+  ```
+
+  Set `MASTER_KEY_PREV` to the value being retired for the length of the pass and delete it after.
+  A row this instance cannot read is reported by account and left exactly as it is — the command
+  never overwrites a blob it could not open. See `SECURITY.md` for when rotation is urgent.
 - A key is verified against the provider before it is saved, so a typo fails with
   *"The provider rejected this key"* instead of failing on the first message.
 - Admins can disable an account (instant lockout on every request, not just the login form),
@@ -512,61 +551,77 @@ the server does not reset a lock and a second process cannot brute-force around 
 A locked administrator is still reachable: the lock stops *sign-ins*, not sessions that already
 exist, and another admin (or `npm run admin -- --unlock <name>`) can clear it.
 
-## Inspector and extension defences
+## Content policy and page defences
 
-Two layers, with honestly different strengths.
+**The layer that works: response headers** ([lib/security.js](lib/security.js)). Every reply carries
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`,
+`Cross-Origin-Opener-Policy: same-origin` and a `Permissions-Policy` that denies camera, microphone,
+geolocation, payment, USB and clipboard reads. The Content-Security-Policy is not one string for the
+whole site: a policy is chosen from the path of the request, because only one page has to be able to
+show a picture it did not serve itself.
 
-**The layer that works: response headers** ([lib/security.js](lib/security.js)). Every page and API
-reply carries a Content-Security-Policy of `default-src 'self'` with `script-src 'self'`,
-`style-src 'self'`, `connect-src 'self'`, `object-src 'none'`, `base-uri 'none'`,
-`frame-ancestors 'none'`, plus `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-`Referrer-Policy: same-origin`, `Cross-Origin-Opener-Policy: same-origin` and a
-`Permissions-Policy` that denies camera, microphone, geolocation, payment, USB and clipboard reads.
-That means:
+| Policy      | Served to                                     | img-src                | media-src                  |
+| ----------- | --------------------------------------------- | ---------------------- | -------------------------- |
+| `app`       | `/`, `/index.html`                            | `'self' data: https:`  | `'none'`                   |
+| `studio`    | `/studio.html`                                | `'self' data: https:`  | `'self' blob: data: https:`|
+| `page`      | `/coder.html`, `/pricing.html`, `/admin.html`, and anything else the path table does not know | `'self' data:` | `'none'` |
+| `api`       | every `/api/*` reply                          | `'none'` (all directives `'none'`) | —          |
+
+The part that is the same on all four documents is the part that matters: `default-src 'self'`,
+`script-src 'self'`, `style-src 'self'`, `connect-src 'self'`, `object-src 'none'`, `base-uri 'none'`,
+`form-action 'self'`, `frame-ancestors 'none'`. That means:
 
 - no inline `<script>` or `style="…"` attribute anywhere, so a pasted bookmarklet, a `javascript:`
   URL or an injected `<script>` tag is refused by the browser;
 - nothing the page loads can talk to another origin, so stolen session data has nowhere to go;
 - the site cannot be framed, which kills the clickjacking route into the key settings panel.
 
-Two origins are opened, and only for display: `img-src 'self' data: https:` and
-`media-src 'self' blob: https:`. A generated picture arrives as `data:` and a generated clip is
-served from whichever CDN the provider happens to use for that model — those hosts are not published
-anywhere, so naming them is not possible, and the alternative is to route every byte through the
-function and pay the transfer twice. `blob:` is there for spoken audio: the voice route answers a
-POST with mp3 bytes that belong to the session that paid for them, so they are turned into a blob URL
-for `<audio>` rather than put into a URL the browser could cache or share.
-Note the asymmetry: `img-src` has no `blob:`. Any picture read off the visitor's own disk therefore
-goes through `FileReader.readAsDataURL` before it reaches an `<img>`, in the studio and in the look
-panel alike. A `blob:` URL there is not merely refused — a CSP-blocked image fires no `error` event,
-so the load hangs forever and the file picker looks like it does nothing.
-The carve-out is display-only: `connect-src` stays `'self'`, so nothing in a media URL can be fetched,
-posted to, or turned into a request; clips and picture links also carry `rel="noopener"` and
+The two carve-outs are for display only, and each is on the page that needs it. A generated picture
+arrives as `data:`; a generated clip is served from whichever CDN the provider happens to use for
+that model, and those hosts are not published anywhere, so naming them is not possible and the
+alternative is to route every byte through the function and pay the transfer twice. `blob:` appears
+in the studio's `media-src` because the voice route answers a POST with mp3 bytes that belong to the
+session that paid for them, so they become a blob URL for `<audio>` rather than a URL the browser
+could cache or share. The chat page keeps `https:` in `img-src` for one feature: the wallpaper
+address typed into the Look panel. Nothing else on that page reaches out — see the next paragraph.
+Note the asymmetry: `img-src` has no `blob:` on any page. Any picture read off the visitor's own disk
+therefore goes through `FileReader.readAsDataURL` before it reaches an `<img>`, in the studio and in
+the look panel alike. A `blob:` URL there is not merely refused — a CSP-blocked image fires no
+`error` event, so the load hangs forever and the file picker looks like it does nothing.
+Because the remote half of `img-src` is a licence to load *any* host, model output never uses it: an
+`<img>` whose `src` is not same-origin or `data:` is rewritten into a plain link marked
+`[external image: …]` before it is put in the page, so a picture in an answer arrives only when you
+click it. `connect-src` stays `'self'` all the same, so nothing in a media URL can be fetched, posted
+to, or turned into a request; clips and picture links also carry `rel="noopener"` and
 `referrerpolicy="no-referrer"`, so the CDN is not told who was looking.
+
+Markdown goes through `marked` and then DOMPurify with the shipped vendor build, and the config
+refuses what DOMPurify's defaults allow but an answer has no business containing: `form`, `input`,
+`textarea`, `select`, `button`, `label`, `fieldset`, `dialog`, `marquee`, plus the `srcdoc`,
+`formaction`, `ping` and `autofocus` attributes. Each payload class was checked in a browser against
+the real pipeline rather than assumed from its documentation — `<img onerror>`, `<script>`,
+`<svg><script>`, the `<math><mtext><table><mglyph><style>` mXSS chain, `javascript:` and `data:`
+hrefs, an `<iframe srcdoc>`, a `<style>` block and an inline `onclick` all come back empty or as
+inert text, `target="_top"` is rewritten to `_blank` with `rel="noopener noreferrer"`, and an HTML
+sample inside a fenced code block still renders as source.
 
 Because inline script is forbidden, the theme bootstrap that used to sit in each page's `<head>` is
 now [public/theme.js](public/theme.js), and the admin sparkline sets bar heights through the CSSOM
 instead of a `style` attribute.
 
-**The layer that only discourages: [public/watchdog.js](public/watchdog.js)**. It swallows F12,
-Ctrl/Cmd+Shift+I / J / C, Ctrl+U and Ctrl+S, suppresses right-click except in fields and on selected
-text (so pasting a key and copying code still work), notices a docked inspector by the pixels it
-steals, spots automation hooks such as `navigator.webdriver` and driver-injected globals, blurs the
-API key hint while tools are open, and reports what it saw to `POST /api/guard/event`, which writes
-`devtools_open`, `automation_detected` or `guard_removed` into the same audit list the admin page
-shows. Say so plainly: **a determined person beats all of this**, because their browser is their
-machine. It is a speed bump and a tripwire, not a lock.
-
-Three knobs:
-
-| What you want                | How                                                        |
-| ---------------------------- | ---------------------------------------------------------- |
-| a bit stronger                | `data-mode="strict"` on the `watchdog.js` tag — also blanks the page and probes the console |
-| get out of your own way       | `localStorage.setItem('devchat.guard', 'off')` in the console, or delete that key to turn it back on |
-| change what counts as secret  | add or remove `data-guard="secret"` on the elements to blur |
-
-`warn` is the default on all five pages. Detection is deliberately quiet: one report per kind per
-minute on the client, and the same again on the server, so the audit list cannot be flooded.
+**What was taken out: the inspector watchdog.** Five pages used to load
+`public/watchdog.js`, which swallowed F12, Ctrl/Cmd+Shift+I / J / C, Ctrl+U and Ctrl+S, suppressed
+right-click outside fields, blurred the API key hint when a docked inspector stole pixels, noticed
+automation hooks such as `navigator.webdriver`, and reported all of it to `POST /api/guard/event`.
+None of that is a protection — their browser is their machine, so a determined person beats it in a
+minute — and what it did accomplish was to break ordinary, legitimate things for the people paying
+for this site: opening the console to read an error, saving a page, copying a URL with the right
+button. It is gone, together with the endpoint that recorded its reports and the CSS that blurred
+the hint. `GET /api/admin/security` still lists the `devtools_open` and `automation_detected` rows
+that were written while it existed, so the history an admin already has keeps rendering. What the
+pages are protected by now is the policy above, sanitising before rendering, and server-side checks:
+the key never reaches the page, the chat proxy whitelists its parameters, and a charge is read from
+the upstream reply rather than from anything the client claims.
 
 ## Anti-abuse
 
@@ -593,11 +648,31 @@ deleted on every cold start, because a flood is what fills the table. That table
 the live database — and if the table is ever dropped, layer 1 keeps working on its own.
 
 Both layers refuse the same way: `429` with `Retry-After`, and a sentence naming what ran out —
-`Too many paid requests from this address. Wait 43s.` or `This account has used its 200.000 ₫ daily
-limit.` Never a `401`, because the browser reads that as "your session died" and signs people out in
-the middle of being attacked. Each refusal also leaves one `throttled` row in the audit list the admin
-page reads — at most one per bucket per five minutes, because a defence that buys a database write for
-every rejected request is the attack wearing a defence's clothes.
+`Too many paid requests from this address. Wait 43s.` or `Your key has been charged 6.06 ₫ in the last
+24 hours, against the 4 ₫ limit in force.` Never a `401`, because the browser reads that as "your
+session died" and signs people out in the middle of being attacked. Each refusal also leaves one
+`throttled` row in the audit list the admin page reads — at most one per bucket per five minutes,
+because a defence that buys a database write for every rejected request is the attack wearing a
+defence's clothes.
+
+### What a budget is counted against
+
+A bring-your-own-key request moves one wallet: the user's own. The platform takes nothing on it, so the
+only honest number for a limit is `usage_log.actual_cost` — the figure the provider put on the bill.
+`billed_cost` is the admin's simulated margin, kept for the dashboard's resale column, and it is
+deliberately left out of every budget computation; a ceiling built on it would stop an account at a
+spend its own key never reached. `estimate_cost` (the list-price quote) covers the few routes whose
+answer is a file and so carries no bill, and is added instead of the real charge there. The same three
+columns are what the price calculator, the chat cost chip and the account panel read, so no two of them
+can disagree.
+
+`DAILY_BUDGET_DONG` is the operator's ceiling and the hard stop. An account may set its own daily and
+per-conversation numbers **below** it from Settings → Account (`POST /api/budget`); anything above is
+clamped to the operator's number rather than accepted, and `0` means the account asked for no personal
+limit. `GET /api/budget` answers with exactly the numbers the gate checked, including `basis:
+"provider cost"`, so the panel's warning and the wall cannot drift apart. The per-conversation ceiling
+is checked after the body arrives — the conversation id lives in it — which is why the money gate is
+separate from the rate gate, so a refused flood still never pulls 4 MB off the wire.
 
 The durable reads **fail open**. A Turso that cannot be reached is logged and the request goes through:
 layer 1 still holds that instance, and turning a counter outage into "nobody can chat" is the worse bug.
@@ -611,6 +686,7 @@ layer 1 still holds that instance, and turning a counter outage into "nobody can
 | `WINDOW_SECONDS` / `WINDOW_MAX`  | 300 / 150      | paid requests, per address **and** per account, in the database |
 | `AUTH_WINDOW_SECONDS` / `_MAX`   | 900 / 100      | sign-in attempts per address, in the database                  |
 | `DAILY_BUDGET_DONG` / `_REQUESTS`| 200000 / 5000  | per account over a rolling 24 h, read from `usage_log`         |
+| `BUDGET_WARN_PERCENT`            | 80             | where the account panel starts warning, before the hard stop    |
 | `MAX_STREAMS_PER_USER` / `_TOTAL`| 3 / 12         | answers streaming at the same time                             |
 | `MAX_MEDIA_PER_USER` / `_TOTAL`  | 2 / 4          | picture and video jobs at the same time                        |
 
@@ -748,7 +824,19 @@ it cannot be abused as an open relay to the rest of the upstream API.
   in memory for this instance and in the database across all of them, with a rolling 24-hour spending
   budget read straight off the usage ledger. A refusal is a `429` with `Retry-After` and a sentence
   naming what ran out. See [Anti-abuse](#anti-abuse).
-- **Chat history** in `localStorage`, grouped by day, searchable, and namespaced per user account.
+- **Chat history** in the browser's own object store (`public/chatstore.js`) rather than in
+  `localStorage`: grouped by day, searchable, namespaced per user account, and held to a 30 MB budget
+  that a single oversized write cannot take down with it. History already in `localStorage` moves
+  across on the first read, and the old copy is deleted only after the new one has been read back. If
+  the browser has no object store — private mode, storage blocked — the same code writes to
+  `localStorage` and says so in the pane, because a chat page that quietly moves your history
+  somewhere smaller is a bug and one that loses it is a disaster.
+- **Chats & storage pane** beside the Generation and Account tabs: how much is stored and against what
+  budget, a request to the browser not to evict it, JSON and Markdown downloads, an import that adds a
+  downloaded file back as new conversations instead of replacing anything, an optional age cut of 3 or
+  30 days that is off until chosen, and a box that must be ticked before signing out deletes this
+  account's chats and saved files. The download is your own text: no key, no session, nothing that can
+  sign in.
 - **File attachments** — attach source files, drop them onto the page from the file manager, or paste
   more than 3000 characters, and the text is sent as a fenced block with its filename. A drop that
   lands outside the composer is still read, never opened: the browser's own default is prevented, and
@@ -865,7 +953,6 @@ public/
   style.js             the look & feel panel: backdrop, ambient bed, synthesised interface cues
   config.js            which API origin this page talks to ('' = the server that sent it)
   theme.js             sets the theme and the chosen backdrop before first paint (no inline script)
-  watchdog.js          inspector and automation deterrent, reports to /api/guard/event
   styles.css
   logo.jpg             the brand artwork as supplied — it carries its own "Vibe coding ai" wordmark
   logo-mark.jpg        the brain cropped square out of it: favicon, sidebar and every page header

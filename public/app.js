@@ -18,6 +18,7 @@
   const FILE_STORE = 'files';
   const FILE_QUOTA = 30 * 1024 * 1024;
   const FILE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+  const DAY_MS = 24 * 60 * 60 * 1000;
   const SPLIT_BYTES = 100 * 1024;
   // Covers both a model that never answers and one that stalls mid-stream.
   const IDLE_TIMEOUT_MS = 90000;
@@ -95,6 +96,11 @@
     steps: false,
     // Save code blocks from an answer into the browser workspace.
     autoFiles: true,
+    // 0 keeps every transcript; 3 and 30 drop the ones not touched for that long.
+    // Off by default because a chat history is the one thing here nobody should
+    // lose by surprise.
+    chatTtlDays: 0,
+    forgetOnSignout: false,
     collapsed: false
   };
 
@@ -115,46 +121,106 @@
     return state.user ? `${CHAT_PREFIX}:u${state.user.id}` : null;
   }
 
-  function loadChats() {
+  function parseChats(text) {
+    if (!text) return null;
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // A reload mid-stream would otherwise leave a caret spinning forever.
+  function markInterrupted(list) {
+    for (const conv of list) {
+      for (const msg of conv.messages || []) {
+        msg.thinking = false;
+        if (!msg.content && !msg.reasoning && !msg.error) msg.error = 'Interrupted before any output arrived.';
+      }
+    }
+  }
+
+  // The age cut is applied where the history is read, so the choice in the settings
+  // pane and the behaviour after a reload cannot drift apart.
+  function applyTtl() {
+    const days = Number(prefs.chatTtlDays) || 0;
+    if (!days) return 0;
+    const cutoff = Date.now() - days * DAY_MS;
+    const keep = state.conversations.filter((c) => (c.updatedAt || c.createdAt || 0) >= cutoff);
+    const dropped = state.conversations.length - keep.length;
+    if (dropped) {
+      state.conversations = keep;
+      if (!keep.some((c) => c.id === state.activeId)) state.activeId = keep[0]?.id || null;
+    }
+    return dropped;
+  }
+
+  async function loadChats() {
     const key = chatsKey();
-    let stored = key ? readStore(key, null) : null;
+    let stored = key ? parseChats(await ChatStore.get(key)) : null;
+    let adopted = false;
     if (stored === null) {
       // The first account to sign in on this browser adopts whatever history
       // predates accounts, then the shared key is dropped.
       const legacy = readStore(CHAT_PREFIX, null);
       if (Array.isArray(legacy)) {
         stored = legacy;
+        adopted = true;
         try {
           localStorage.removeItem(CHAT_PREFIX);
         } catch { /* ignore */ }
       }
     }
     state.conversations = Array.isArray(stored) ? stored : [];
-    // A reload mid-stream would otherwise leave a caret spinning forever.
-    for (const conv of state.conversations) {
-      for (const msg of conv.messages || []) {
-        msg.thinking = false;
-        if (!msg.content && !msg.reasoning && !msg.error) msg.error = 'Interrupted before any output arrived.';
-      }
-    }
+    markInterrupted(state.conversations);
     state.activeId = state.conversations[0]?.id || null;
+    // An adoption is written straight away: the shared copy is already gone, and
+    // history that only lives in memory until the next save is history at risk.
+    if (adopted) writeChats();
+    else if (applyTtl()) saveChats();
   }
 
+  // A read is asynchronous now, so two snapshots in flight would land in whatever
+  // order the browser liked and the older one could win. One queue per page.
   let saveTimer = null;
+  let saveChain = Promise.resolve();
+
   function saveChats() {
-    const key = chatsKey();
-    // Never write before we know whose history this is.
-    if (!key) return;
+    if (!chatsKey()) return saveChain;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try {
-        // Picture data URLs are display-only; keeping them would fill the quota
-        // after a couple of screenshots. The text that travelled is kept.
-        localStorage.setItem(key, JSON.stringify(state.conversations, (k, v) => (k === 'images' ? undefined : v)));
-      } catch {
-        toast('Storage full — older chats were not saved', true);
-      }
-    }, 400);
+    saveTimer = setTimeout(writeChats, 400);
+    return saveChain;
+  }
+
+  function writeChats() {
+    // Never write before we know whose history this is.
+    const key = chatsKey();
+    if (!key) return saveChain;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    // Picture data URLs are display-only; keeping them would fill the budget after
+    // a couple of screenshots. The text that travelled is kept.
+    const text = JSON.stringify(state.conversations, (k, v) => (k === 'images' ? undefined : v));
+    saveChain = saveChain
+      .then(() => ChatStore.set(key, text))
+      .then((res) => {
+        if (res && !res.ok) {
+          toast(res.reason === 'too-big'
+            ? `These chats pass the ${Math.round(res.quota / (1024 * 1024))} MB budget — export and clear an old one`
+            : 'This browser would not store your chats', true);
+        }
+        return res;
+      })
+      .catch(() => toast('This browser would not store your chats', true));
+    return saveChain;
+  }
+
+  // Export, import and signing out write immediately rather than waiting for the
+  // debounce — a chat that exists only in memory is a chat that can be lost, and
+  // these are the three moments where the page is about to hand it to someone else.
+  function flushChats() {
+    return writeChats();
   }
   function savePrefs() {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
@@ -170,6 +236,7 @@
   const stopBtn = $('#stopBtn');
   const statusEl = $('#statusText');
   const costChip = $('#costChip');
+  const costChipValue = $('#costChipValue');
   const convListEl = $('#convList');
   const modelBtn = $('#modelBtn');
   const modelNameEl = $('#modelName');
@@ -353,6 +420,16 @@
 
   marked.use({ gfm: true, breaks: true });
 
+  // DOMPurify already refuses scripts, event handlers and javascript: URLs. These
+  // are the tags that survive its defaults and still have no business inside an
+  // answer: a form is how a phishing page borrows the look of the sign-in card, and
+  // a control that submits to nowhere is only noise. Checked against the shipped
+  // vendor build in a browser, payload by payload, rather than assumed from docs.
+  const SANITIZE = {
+    FORBID_TAGS: ['form', 'input', 'textarea', 'select', 'button', 'label', 'fieldset', 'dialog', 'marquee'],
+    FORBID_ATTR: ['srcdoc', 'formaction', 'ping', 'autofocus']
+  };
+
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     if (node.tagName === 'A' && node.getAttribute('href')) {
       node.setAttribute('target', '_blank');
@@ -379,7 +456,7 @@
   });
 
   function renderMarkdown(target, text) {
-    target.innerHTML = DOMPurify.sanitize(marked.parse(text || '', { gfm: true, breaks: true }));
+    target.innerHTML = DOMPurify.sanitize(marked.parse(text || '', { gfm: true, breaks: true }), SANITIZE);
   }
 
   // ```lang filename.ext — marked only keeps the first word, so recover the
@@ -640,6 +717,7 @@
     if (msg.elapsedMs) bits.push(`${(msg.elapsedMs / 1000).toFixed(1)}s`);
     if (msg.stopped) bits.push('stopped');
     note.textContent = bits.join(' · ');
+    note.title = 'Tokens, cost and time the provider reported for this answer';
   }
 
   function paintContent(container, msg, final, live = false) {
@@ -724,14 +802,18 @@
     buildRail();
   }
 
+  // The provider's own number for this chat, summed from the usage block it sent
+  // back. Nothing is added to it and nothing is estimated: this platform takes no
+  // money on a key the user supplied, so the only figure worth showing is the one
+  // the caller's wallet actually moved.
   function updateCost() {
     const conv = activeConv();
     const cost = conv ? conversationCost(conv) : 0;
     const tokens = conv ? conversationTokens(conv) : 0;
-    costChip.textContent = cost > 0 ? formatVnd(cost) : '0 ₫';
+    costChipValue.textContent = formatVnd(cost);
     costChip.title = tokens
-      ? `${tokens.toLocaleString()} tokens · billed to your own API key`
-      : 'Spend for this conversation, billed to your own API key';
+      ? `${tokens.toLocaleString()} tokens · charged to your own key by the provider`
+      : 'What the provider has charged your own key for this conversation';
   }
 
   function renderAccount() {
@@ -742,11 +824,19 @@
     acctRoleEl.hidden = !isAdmin;
     $('#adminLink').hidden = !isAdmin;
 
-    const hint = user?.hasKey ? user.apiKeyHint || 'saved' : 'not set';
+    // Which key the page is holding, and how openly it should say so. A
+    // tab-only key has no hint to show — there is no stored value to describe.
+    const keyMode = Auth.keyMode;
+    const hint = keyMode === 'session'
+      ? 'this tab only'
+      : keyMode === 'vault'
+        ? user.apiKeyHint || 'saved'
+        : 'not set';
     acctKeyHintEl.textContent = hint;
     keyHintEl.textContent = hint;
-    keyEditBtn.textContent = user?.hasKey ? 'Replace key' : 'Add key';
-    keyRemoveBtn.hidden = !user?.hasKey;
+    keyEditBtn.textContent = keyMode === 'none' ? 'Add key' : 'Change key';
+    keyRemoveBtn.hidden = keyMode === 'none';
+    keyRemoveBtn.textContent = keyMode === 'session' ? 'Forget it' : 'Remove';
   }
 
   function toggleAcctMenu(open) {
@@ -1113,7 +1203,10 @@
       model: conv.model || prefs.model,
       messages: apiMessages(conv, assistantIndex),
       stream: true,
-      temperature: Number(prefs.temperature)
+      temperature: Number(prefs.temperature),
+      // Labels the usage row on the server so one chat can carry its own budget.
+      // It is never forwarded to the provider.
+      conversation: conv.id
     };
     const maxTokens = Number(prefs.maxTokens);
     if (maxTokens > 0) payload.max_tokens = maxTokens;
@@ -1260,6 +1353,9 @@
       saveChats();
       renderConvList();
       stick();
+      // The answer just cost money, so the limit that would stop the next one is
+      // re-read from the server instead of being estimated from this tab's copy.
+      await refreshBudget();
       // The answer changed height all the way down the thread, so the marks
       // need re-measuring once, at the end, rather than on every paint.
       buildRail();
@@ -1852,6 +1948,7 @@
           stream: false,
           model: prefs.model,
           temperature: 0.4,
+          conversation: conv?.id,
           messages: [{ role: 'system', content: REWRITE_SYSTEM }, { role: 'user', content: ask }]
         }
       });
@@ -2060,6 +2157,17 @@
     toast('Workspace cleared');
   }
 
+  // Signing out "and forgetting this device" clears the files as well as the
+  // chats — half a clean-up would leave the code behind.
+  async function wsForgetAccount() {
+    const all = await wsRun('readonly', (store) => store.getAll());
+    for (const f of (all || []).filter((x) => x.owner === wsOwner())) {
+      await wsRun('readwrite', (store) => store.delete(f.id));
+    }
+    wsFiles = [];
+    wsEditing = null;
+  }
+
   function downloadEditedFile() {
     const path = sanitizePath($('#fileEditName').value.trim());
     const content = $('#fileEditBody').value;
@@ -2176,6 +2284,10 @@
     panel.hidden = false;
     for (const tab of $$('.sp-tab', panel)) tab.classList.toggle('is-on', tab.dataset.sp === name);
     for (const pane of $$('.sp-pane', panel)) pane.hidden = pane.dataset.sp !== name;
+    // The limits pane is only honest if it shows what the server is enforcing, so
+    // it is read on opening rather than carried over from the last time it was up.
+    if (name === 'account') loadBudget({ fill: true });
+    if (name === 'data') renderStorage();
   }
 
   function showPwMsg(text, ok) {
@@ -2183,6 +2295,104 @@
     msg.textContent = text;
     msg.className = 'sp-note ' + (ok ? 'ok' : 'bad');
     msg.hidden = false;
+  }
+
+  /* ---------------- spending limits ---------------- */
+
+  // The wall lives on the server, so the panel reads it from there instead of
+  // adding up the chat in this tab: a limit shown from browser memory would be a
+  // guess about a number the browser cannot see, and the point of the warning is
+  // that it agrees with the stop.
+  let budgetWarnedFor = '';
+
+  function paintBudget(data) {
+    const s = data?.state;
+    const note = $('#budgetSpent');
+    const bits = [];
+    if (!s) {
+      bits.push('Spending cannot be read right now, so no limit is being enforced.');
+    } else {
+      bits.push(`Today ${formatVnd(s.spent)} of ${formatVnd(s.daily)} charged to your key`);
+      if (s.chatCeiling) bits.push(`this chat ${formatVnd(s.chatSpent)} of ${formatVnd(s.chatCeiling)}`);
+    }
+    note.textContent = bits.join(' · ');
+    note.classList.toggle('near', Boolean(s && (s.nearLimit || (s.chatCeiling && s.chatSpent >= s.chatCeiling * 0.8))));
+    return s;
+  }
+
+  function fillBudgetInputs(data) {
+    const daily = $('#budgetDaily');
+    const chat = $('#budgetChat');
+    const system = Number(data?.systemDailyVnd) || 0;
+    daily.placeholder = `system ceiling: ${formatVnd(system)}`;
+    chat.placeholder = 'off';
+    if (document.activeElement !== daily) daily.value = state.user?.dailyBudgetVnd ?? '';
+    if (document.activeElement !== chat) chat.value = state.user?.chatBudgetVnd ?? '';
+  }
+
+  async function loadBudget({ fill = false } = {}) {
+    if (!state.user) return null;
+    const conv = activeConv();
+    const res = await Auth.api(`/api/budget${conv ? `?conversation=${encodeURIComponent(conv.id)}` : ''}`);
+    if (!res.ok) {
+      $('#budgetSpent').textContent = res.data?.error || 'Could not read your spending so far.';
+      return null;
+    }
+    if (fill) fillBudgetInputs(res.data);
+    return paintBudget(res.data);
+  }
+
+  // Called when a turn lands. The one number worth interrupting a chat for is the
+  // one that says the next message will be refused, and it is said once per limit
+  // rather than once per message.
+  async function refreshBudget() {
+    const s = await loadBudget();
+    if (!s) return;
+    const chatNear = s.chatCeiling && s.chatSpent >= s.chatCeiling * 0.8;
+    if (!s.nearLimit && !chatNear) return;
+    const key = `${s.daily}:${s.chatCeiling || 0}`;
+    if (budgetWarnedFor === key) return;
+    budgetWarnedFor = key;
+    toast(
+      s.nearLimit
+        ? `${formatVnd(s.spent)} of your ${formatVnd(s.daily)} daily limit used. Messages stop at the limit.`
+        : `This chat has used ${formatVnd(s.chatSpent)} of its ${formatVnd(s.chatCeiling)} budget.`,
+      true
+    );
+  }
+
+  function showBudgetMsg(text, ok) {
+    const msg = $('#budgetMsg');
+    msg.textContent = text;
+    msg.className = 'sp-note ' + (ok ? 'ok' : 'bad');
+    msg.hidden = false;
+  }
+
+  async function saveBudget() {
+    const read = (id) => {
+      const raw = $(id).value.trim();
+      return raw === '' ? null : Number(raw);
+    };
+    const dailyVnd = read('#budgetDaily');
+    const chatVnd = read('#budgetChat');
+    if ([dailyVnd, chatVnd].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+      return showBudgetMsg('A limit is a number of dong, or blank for none.', false);
+    }
+    const res = await Auth.api('/api/budget', {
+      method: 'POST',
+      body: { dailyVnd, chatVnd, conversation: activeConv()?.id }
+    });
+    if (!res.ok) return showBudgetMsg(res.data?.error || `Could not save (${res.status})`, false);
+    state.user = res.data.user;
+    renderAccount();
+    fillBudgetInputs(res.data);
+    paintBudget(res.data);
+    budgetWarnedFor = '';
+    const clamped = dailyVnd && Number(res.data.state?.daily) < dailyVnd;
+    showBudgetMsg(
+      clamped ? `Saved, but the daily limit is held to this server's ${formatVnd(res.data.state.daily)}.` : 'Limits saved.',
+      !clamped
+    );
   }
 
   /* ---------------- events ---------------- */
@@ -2324,17 +2534,34 @@
         openSettingsTab('account');
         setTimeout(() => $('#pwCurrent').focus(), 40);
       } else if (item.dataset.acct === 'signout') {
-        Auth.signOut();
+        signOut();
       }
     });
 
     keyEditBtn.addEventListener('click', () => Auth.showKeyGate(afterKeyChange));
 
     keyRemoveBtn.addEventListener('click', async () => {
+      // A tab-only key was never sent anywhere, so forgetting it is a local
+      // action — no confirm dialog for something that cannot be undone badly.
+      if (Auth.keyMode === 'session') {
+        Auth.clearSessionKey();
+        afterKeyChange(state.user);
+        toast('This tab has forgotten the key');
+        return;
+      }
       if (!confirm('Remove your saved API key? You cannot chat until you add another.')) return;
       const res = await Auth.api('/api/key', { method: 'DELETE' });
       if (!res.ok) return toast(res.data.error || 'Could not remove the key', true);
       afterKeyChange(res.data.user);
+    });
+
+    $('#budgetSaveBtn').addEventListener('click', saveBudget);
+    // Blank on purpose: clearing the two boxes and saving is how an account goes
+    // back to whatever the server holds, so the button is the same request.
+    $('#budgetClearBtn').addEventListener('click', () => {
+      $('#budgetDaily').value = '';
+      $('#budgetChat').value = '';
+      saveBudget();
     });
 
     $('#pwForm').addEventListener('submit', async (event) => {
@@ -2350,8 +2577,6 @@
       event.currentTarget.reset();
       showPwMsg('Password changed. Every other session was signed out.', true);
     });
-
-    $('#signOutBtn').addEventListener('click', () => Auth.signOut());
 
     inputEl.addEventListener('input', autosize);
     inputEl.addEventListener('keydown', (event) => {
@@ -2496,11 +2721,217 @@
     }
   }
 
+  /* ---------------- chats & storage ---------------- */
+
+  const KB = 1024;
+  const MB = KB * 1024;
+
+  function mb(bytes) {
+    return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / KB))} KB`;
+  }
+
+  const dateStamp = () => new Date().toISOString().slice(0, 10);
+
+  function showStorageMsg(text, ok) {
+    const msg = $('#storageMsg');
+    msg.textContent = text;
+    msg.className = 'sp-note ' + (ok ? 'ok' : 'bad');
+    msg.hidden = false;
+  }
+
+  // Counted from what the store actually holds rather than from memory, so the
+  // number in the pane cannot disagree with the browser's own.
+  async function renderStorage() {
+    let info;
+    try {
+      info = await ChatStore.usage();
+    } catch {
+      $('#storageWhere').textContent = 'unavailable';
+      $('#storageUsed').textContent = 'This browser would not say what it is holding.';
+      return;
+    }
+    const n = state.conversations.length;
+    $('#storageWhere').textContent = info.where === 'indexeddb' ? 'in this browser' : 'in local storage';
+    $('#storageUsed').textContent = `${n} conversation${n === 1 ? '' : 's'} · ${mb(info.bytes)} of the ${mb(info.quota)} allowed`;
+    const free = $('#storageFree');
+    if (info.browser && info.browser.quota) {
+      free.hidden = false;
+      free.textContent = `The browser gives this site ${mb(info.browser.quota)} in total and is holding `
+        + `${mb(info.browser.usage)} for everything on it. `
+        + (info.persisted
+          ? 'This storage is marked persistent, so it is not an eviction candidate.'
+          : 'Until it is granted below, a tight disk can evict it.');
+    } else {
+      free.hidden = true;
+    }
+    const btn = $('#persistBtn');
+    btn.disabled = Boolean(info.persisted);
+    btn.textContent = info.persisted ? 'This browser has agreed to keep them' : 'Ask the browser to keep them';
+  }
+
+  // Same replacer as the store: a backup with a screenshot in it is a backup that
+  // will not fit the device it lands on.
+  function chatsSnapshot() {
+    return JSON.parse(JSON.stringify(state.conversations, (k, v) => (k === 'images' ? undefined : v)));
+  }
+
+  function exportJson() {
+    if (!state.conversations.length) return showStorageMsg('There is nothing to export yet.', false);
+    const payload = {
+      app: 'codevibe-chats',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      account: state.user ? state.user.username : null,
+      conversations: chatsSnapshot()
+    };
+    download(`codevibe-chats-${dateStamp()}.json`, JSON.stringify(payload, null, 2));
+    showStorageMsg('Downloaded. It holds your chats as plain text — no key, no session, nothing that signs in.', true);
+  }
+
+  function chatsToMarkdown() {
+    const out = [];
+    for (const conv of chatsSnapshot().slice().reverse()) {
+      out.push(`# ${conv.title || 'Untitled chat'}`, '');
+      if (conv.model) out.push(`Model: ${conv.model}  `);
+      if (conv.createdAt) out.push(`Started: ${new Date(conv.createdAt).toLocaleString()}  `);
+      out.push('');
+      for (const msg of conv.messages || []) {
+        if (!msg.content) {
+          if (msg.error) out.push(`> ${msg.error}`, '');
+          continue;
+        }
+        out.push(`**${msg.role === 'user' ? 'You' : 'Assistant'}**`, '', msg.content, '');
+      }
+    }
+    return out.join('\n');
+  }
+
+  function exportMarkdown() {
+    if (!state.conversations.length) return showStorageMsg('There is nothing to export yet.', false);
+    download(`codevibe-chats-${dateStamp()}.md`, chatsToMarkdown());
+    showStorageMsg('Downloaded as one readable document.', true);
+  }
+
+  async function importJson(file) {
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return showStorageMsg('That file is not readable JSON.', false);
+    }
+    const list = Array.isArray(parsed) ? parsed : parsed && parsed.conversations;
+    const good = Array.isArray(list) ? list.filter((c) => c && Array.isArray(c.messages)) : [];
+    if (!good.length) return showStorageMsg('No conversations found in that file.', false);
+    if (new Blob([JSON.stringify(good)]).size > ChatStore.QUOTA) {
+      return showStorageMsg(`That file is bigger than the whole ${mb(ChatStore.QUOTA)} budget for this device.`, false);
+    }
+    // Every imported chat gets a fresh id, so a file can add to what is here but
+    // can never replace a conversation already on this device.
+    const clone = JSON.parse(JSON.stringify(good, (k, v) => (k === 'images' ? undefined : v)));
+    for (const conv of clone) {
+      conv.id = uid();
+      // Its age comes along with it: a restored chat is exactly as old as it is, so
+      // the cut chosen above treats it no differently from one written here.
+      conv.createdAt = Number(conv.createdAt) || Date.now();
+      conv.updatedAt = Number(conv.updatedAt) || conv.createdAt;
+      state.conversations.unshift(conv);
+    }
+    state.activeId = state.conversations[0].id;
+    await flushChats();
+    renderConversation();
+    renderConvList();
+    const doomed = prefs.chatTtlDays
+      ? clone.filter((c) => c.updatedAt < Date.now() - prefs.chatTtlDays * DAY_MS).length
+      : 0;
+    showStorageMsg(`Added ${good.length} conversation${good.length === 1 ? '' : 's'} from that file.`
+      + (doomed
+        ? ` ${doomed} of them ${doomed === 1 ? 'is' : 'are'} older than the ${prefs.chatTtlDays} day cut, so ${doomed === 1 ? 'it goes' : 'they go'} on the next visit.`
+        : ''), true);
+  }
+
+  async function clearAllChats() {
+    if (!state.conversations.length) return showStorageMsg('There are no chats on this device.', false);
+    if (!confirm('Delete every conversation stored in this browser? Download a backup first if you want them.')) return;
+    state.conversations = [];
+    state.activeId = null;
+    const key = chatsKey();
+    if (key) await ChatStore.remove(key);
+    renderConversation();
+    renderConvList();
+    await renderStorage();
+    showStorageMsg('Every chat on this device is gone.', true);
+  }
+
+  // Sign-out keeps history by default: a shared computer is exactly the place where
+  // a checkbox nobody read must not be able to erase someone's chats.
+  async function signOut() {
+    if (prefs.forgetOnSignout && state.user) {
+      const key = chatsKey();
+      await flushChats();
+      if (key) await ChatStore.remove(key);
+      try {
+        await wsForgetAccount();
+      } catch { /* a browser without IndexedDB has no files to forget */ }
+    }
+    Auth.signOut();
+  }
+
+  function bindStorage() {
+    $('#chatTtl').value = String(Number(prefs.chatTtlDays) || 0);
+    $('#forgetOnSignout').checked = Boolean(prefs.forgetOnSignout);
+
+    $('#persistBtn').addEventListener('click', async () => {
+      const granted = await ChatStore.persist();
+      showStorageMsg(granted
+        ? 'Granted — this browser will not evict your chats to make room.'
+        : 'Refused, which the browser decides by how full the disk is rather than by asking.', granted);
+      await renderStorage();
+    });
+
+    $('#chatTtl').addEventListener('change', async (event) => {
+      const days = Number(event.target.value) || 0;
+      prefs.chatTtlDays = Math.min(365, Math.max(0, days));
+      savePrefs();
+      const dropped = applyTtl();
+      if (!dropped) {
+        showStorageMsg(prefs.chatTtlDays
+          ? `Chats not touched for ${prefs.chatTtlDays} days will go when this page next opens.`
+          : 'Nothing will be deleted automatically.', true);
+        return;
+      }
+      await writeChats();
+      renderConversation();
+      renderConvList();
+      await renderStorage();
+      showStorageMsg(`Deleted ${dropped} chat${dropped === 1 ? '' : 's'} older than ${prefs.chatTtlDays} days.`, true);
+    });
+
+    $('#exportJsonBtn').addEventListener('click', () => {
+      flushChats().then(exportJson);
+    });
+    $('#exportMdBtn').addEventListener('click', () => {
+      flushChats().then(exportMarkdown);
+    });
+    $('#importJsonBtn').addEventListener('click', () => $('#importFile').click());
+    $('#importFile').addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (file) await importJson(file);
+    });
+    $('#clearChatsBtn').addEventListener('click', clearAllChats);
+    $('#forgetOnSignout').addEventListener('change', (event) => {
+      prefs.forgetOnSignout = event.target.checked;
+      savePrefs();
+    });
+    $('#signOutBtn').addEventListener('click', () => signOut());
+  }
+
   /* ---------------- boot ---------------- */
 
   let enteredFor = null;
 
-  function enterApp(user) {
+  async function enterApp(user) {
     const switched = enteredFor !== user.id;
     state.user = user;
     try { localStorage.setItem(LAST_USER_KEY, JSON.stringify({ id: user.id })); } catch { /* ignore */ }
@@ -2508,16 +2939,17 @@
       enteredFor = user.id;
       if (preloadedFor && preloadedFor === user.id) {
         // Already parsed at boot; only the interrupted turns need touching.
-        for (const conv of state.conversations) {
-          for (const msg of conv.messages || []) {
-            if (!msg.thinking) continue;
-            msg.thinking = false;
-            if (!msg.content && !msg.reasoning && !msg.error) msg.error = 'Interrupted before any output arrived.';
-          }
+        markInterrupted(state.conversations);
+        // Boot hid the over-age chats but could not store that — nobody was signed
+        // in yet, so there was no account key to write to. Now there is.
+        applyTtl();
+        if (preloadedStale) {
+          preloadedStale = false;
+          writeChats();
         }
         state.activeId = state.activeId || state.conversations[0]?.id || null;
       } else {
-        loadChats();
+        await loadChats();
       }
       preloadedFor = user.id;
       renderConversation();
@@ -2536,12 +2968,15 @@
   }
 
   let preloadedFor = null;
+  // Set when boot filtered the history but had nowhere to store the result.
+  let preloadedStale = false;
 
   async function boot() {
     applyTheme();
     bindEvents();
+    bindStorage();
     autosize();
-    preloadChats();
+    await preloadChats();
     renderAccount();
     // Preloaded history is parsed, not drawn: until the server says who this is,
     // showing it could hand one account's chat to the next person at the machine.
@@ -2562,14 +2997,16 @@
     if (Auth.signedIn) inputEl.focus();
   }
 
-  function preloadChats() {
+  async function preloadChats() {
     const cached = readStore(LAST_USER_KEY, null);
     if (!cached?.id) return;
-    const stored = readStore(`${CHAT_PREFIX}:u${cached.id}`, null);
-    if (Array.isArray(stored)) {
-      preloadedFor = cached.id;
-      state.conversations = stored;
-    }
+    const stored = parseChats(await ChatStore.get(`${CHAT_PREFIX}:u${cached.id}`));
+    if (!stored) return;
+    preloadedFor = cached.id;
+    state.conversations = stored;
+    // Only the view is filtered here: with nobody signed in yet there is no account
+    // key to write to. enterApp stores the cut once the session answers.
+    if (applyTtl()) preloadedStale = true;
   }
 
   boot();

@@ -103,7 +103,9 @@ function searchOf(req) {
 }
 
 export default async function handler(req, res) {
-  applySecurityHeaders(res);
+  // Every path that reaches this function is an /api/ one, so the policy it picks
+  // from the pathname is the data policy: nothing loadable, nothing to exfiltrate.
+  applySecurityHeaders(res, pathnameOf(req));
 
   let handleApi;
   try {

@@ -9,6 +9,12 @@
     "host": "node scripts/host.mjs",
     "admin": "node scripts/admin.mjs",
     "test:ui": "node .smoketest/ui-server.mjs",
+    "test:auth": "node .smoketest/password-run.mjs",
+    "test:vault": "node .smoketest/vault-run.mjs && node .smoketest/rotate-run.mjs",
+    "test:keys": "node .smoketest/sessionkey-run.mjs",
+    "test:budget": "node .smoketest/budget-run.mjs",
+    "test:store": "node .smoketest/chatstore-run.mjs",
+    "ship": "node scripts/ship.mjs",
     "prune": "node scripts/prune.mjs",
     "migrate:turso": "node scripts/migrate-turso.mjs"
   },

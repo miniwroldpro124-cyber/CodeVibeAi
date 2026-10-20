@@ -7,10 +7,9 @@
 <title>DevChat — AI pair programmer</title>
 <link rel="icon" type="image/jpeg" href="/logo-mark.jpg">
 <link rel="stylesheet" href="/vendor/atom-one-dark.min.css">
-<link rel="stylesheet" href="/styles.css?v=20">
+<link rel="stylesheet" href="/styles.css?v=21">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
-<script src="/watchdog.js" data-mode="warn" defer></script>
 </head>
 <body>
 
@@ -55,7 +54,7 @@
         </button>
         <div class="acct-menu" id="acctMenu" role="menu" hidden>
           <button class="acct-item" data-acct="key" role="menuitem">
-            <span>API key</span><b class="acct-hint" id="acctKeyHint" data-guard="secret">not set</b>
+            <span>API key</span><b class="acct-hint" id="acctKeyHint">not set</b>
           </button>
           <button class="acct-item" data-acct="password" role="menuitem"><span>Change password</span></button>
           <a class="acct-item" href="/studio.html" role="menuitem"><span>Media studio</span></a>
@@ -104,7 +103,7 @@
       </div>
 
       <div class="topbar-right">
-        <span class="cost-chip" id="costChip" title="Estimated spend for this conversation">0 ₫</span>
+        <span class="cost-chip" id="costChip" title="What the provider charged your own key for this conversation"><em>this chat</em><b id="costChipValue">0 ₫</b></span>
         <button class="icon-btn" id="filesBtn" aria-label="Saved files" title="Saved files">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v10H3z"/><path d="M3 7V5h6l2 2"/></svg>
         </button>
@@ -118,6 +117,7 @@
       <div class="sp-tabs" role="tablist">
         <button type="button" class="sp-tab is-on" data-sp="gen" role="tab">Generation</button>
         <button type="button" class="sp-tab" data-sp="account" role="tab">Account &amp; key</button>
+        <button type="button" class="sp-tab" data-sp="data" role="tab">Chats &amp; storage</button>
       </div>
 
       <div class="sp-pane" data-sp="gen">
@@ -147,7 +147,7 @@
 
       <div class="sp-pane" data-sp="account" hidden>
         <div class="setting">
-          <span>API key <b id="keyHint" data-guard="secret">not set</b></span>
+          <span>API key <b id="keyHint">not set</b></span>
           <div class="btn-row">
             <button type="button" class="btn btn-primary" id="keyEditBtn">Add key</button>
             <button type="button" class="btn btn-ghost danger" id="keyRemoveBtn" hidden>Remove</button>
@@ -156,6 +156,30 @@
             Every request is signed with your own key and billed to you by the provider.
             It is stored encrypted on this server and never sent back to the browser.
           </p>
+        </div>
+        <div class="setting">
+          <span>Spending limits</span>
+          <div class="budget-grid">
+            <label class="budget-cell">
+              <span>Per day</span>
+              <input type="number" id="budgetDaily" min="0" step="500" inputmode="numeric" placeholder="system ceiling">
+            </label>
+            <label class="budget-cell">
+              <span>Per chat</span>
+              <input type="number" id="budgetChat" min="0" step="500" inputmode="numeric" placeholder="off">
+            </label>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="budgetSaveBtn">Save limits</button>
+            <button type="button" class="btn btn-ghost" id="budgetClearBtn" title="Remove both personal limits">Use the server default</button>
+          </div>
+          <p class="sp-note" id="budgetSpent">Loading…</p>
+          <p class="sp-note">
+            Both limits count what the provider charges your own key, not any added price.
+            The server stops the request when one is reached — a chat that hits its limit stops
+            even if this tab is still open.
+          </p>
+          <p class="sp-note" id="budgetMsg" hidden></p>
         </div>
         <div class="setting">
           <span>Password</span>
@@ -170,6 +194,61 @@
           <span>Session</span>
           <div class="btn-row">
             <button type="button" class="btn btn-ghost danger" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp-pane" data-sp="data" hidden>
+        <div class="setting">
+          <span>Chats on this device <b id="storageWhere">measuring</b></span>
+          <p class="sp-note" id="storageUsed">Measuring…</p>
+          <p class="sp-note" id="storageFree" hidden></p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost" id="persistBtn">Ask the browser to keep them</button>
+          </div>
+          <p class="sp-note">
+            Transcripts live in this browser's own database, never on this site's server. The
+            database gets a real budget rather than the few megabytes a page used to share, and a
+            write that would pass it leaves your chats exactly as they were.
+          </p>
+        </div>
+        <div class="setting">
+          <span>Automatic cleanup</span>
+          <div class="btn-row">
+            <select id="chatTtl" class="sp-select" title="Delete conversations older than this">
+              <option value="0">Keep every chat until I delete it</option>
+              <option value="3">Delete chats older than 3 days</option>
+              <option value="30">Delete chats older than 30 days</option>
+            </select>
+          </div>
+          <p class="sp-note">
+            Saved files from the workspace always go after 3 days. Chat cleanup is off until you
+            choose a cut above, and it applies as soon as you do.
+          </p>
+        </div>
+        <div class="setting">
+          <span>Back up and restore</span>
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost" id="exportJsonBtn">Download JSON</button>
+            <button type="button" class="btn btn-ghost" id="exportMdBtn">Download Markdown</button>
+            <button type="button" class="btn btn-ghost" id="importJsonBtn">Add from JSON</button>
+          </div>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
+          <p class="sp-note" id="storageMsg" hidden></p>
+          <p class="sp-note">
+            A download is your own history as plain text — no key, no session, nothing that can be
+            used to sign in. Importing adds conversations as new ones, so it cannot replace what is
+            already here.
+          </p>
+        </div>
+        <label class="setting setting-check">
+          <input type="checkbox" id="forgetOnSignout">
+          <span>When I sign out, delete this account's chats and saved files from this browser</span>
+        </label>
+        <div class="setting">
+          <span>Start over</span>
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost danger" id="clearChatsBtn">Delete every chat on this device</button>
           </div>
         </div>
       </div>
@@ -255,9 +334,10 @@
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
-<script src="/auth.js?v=20"></script>
-<script src="/zip.js?v=20"></script>
-<script src="/style.js?v=20"></script>
-<script src="/app.js?v=20"></script>
+<script src="/auth.js?v=21"></script>
+<script src="/zip.js?v=21"></script>
+<script src="/chatstore.js?v=21"></script>
+<script src="/style.js?v=21"></script>
+<script src="/app.js?v=21"></script>
 </body>
 </html>

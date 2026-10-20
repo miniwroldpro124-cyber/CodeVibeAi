@@ -6,7 +6,9 @@ window.Auth = (() => {
     user: null,
     disabled: false,
     apiError: '',
-    markupPercent: 20,
+    // Replaced by the server's number on the first /api answer. Zero until then:
+    // an assumed margin would be shown as a price before anything is known.
+    markupPercent: 0,
     priceBookSize: 0,
     oauth: [],
     ready: false
@@ -38,6 +40,13 @@ window.Auth = (() => {
   function apiUrl(path) {
     return API_ROOT + path;
   }
+
+  // A key held for this tab and nothing more: one module variable, never in
+  // localStorage, never in a cookie, never in a URL, never in the chat history
+  // the page keeps on disk. Reloading the page forgets it, which is the point.
+  // The server accepts it in a request header and uses it for that call only.
+  let sessionKey = '';
+  const KEY_SHAPE = /^sk-[A-Za-z0-9_-]{16,}$/;
 
   // A split deployment cannot hand a finished sign-in over as a cookie — page and
   // API are different sites there, and Safari drops third-party cookies — so the
@@ -78,7 +87,22 @@ window.Auth = (() => {
     const headers = Object.assign({}, extra);
     const token = REMOTE ? readToken() : '';
     if (token) headers.Authorization = `Bearer ${token}`;
+    if (sessionKey) headers['X-DevChat-Key'] = sessionKey;
     return headers;
+  }
+
+  // True when the pasted value has the shape of a provider key. Nothing else is
+  // checked here: only the provider can say whether the key works, and asking it
+  // costs the key owner money.
+  function setSessionKey(value) {
+    const plain = String(value || '').trim();
+    if (!KEY_SHAPE.test(plain)) return false;
+    sessionKey = plain;
+    return true;
+  }
+
+  function clearSessionKey() {
+    sessionKey = '';
   }
 
   async function api(path, { method = 'GET', body, signal } = {}) {
@@ -270,17 +294,26 @@ window.Auth = (() => {
     </p>
     <form class="ov-form" data-form="key" novalidate>
       <label class="ov-field">
-        <span>API key</span>
-        <input name="apiKey" type="password" autocomplete="new-password" autocapitalize="none"
+        <span>API key &mdash; this tab only, unless you save it</span>
+        <input name="apiKey" type="password" autocomplete="off" autocapitalize="none"
                spellcheck="false" placeholder="sk-xxxxxxxxxxxxxxxx" required>
       </label>
       <p class="ov-error" data-error hidden></p>
-      <button type="submit" class="ov-submit"><span data-submit-label>Save key</span></button>
+      <button type="submit" class="ov-submit" data-mode="session">
+        <span data-submit-label>Use for this tab only</span>
+      </button>
+      <button type="submit" class="ov-link" data-mode="save">
+        <span data-submit-label>Save it on the server</span>
+      </button>
       <button type="button" class="ov-link" data-act="key-later">Skip for now</button>
     </form>
     <p class="ov-note">
-      Stored encrypted (AES-256-GCM) and shown only as <code>sk-b27&bull;&bull;&bull;&bull;62a6</code>.
-      Saving sends one 1-token test request to verify it, which costs the provider's minimum
+      <b>This tab only</b> keeps the key in this page&rsquo;s memory and sends it once per
+      request. Nothing is written to storage, and reloading the page asks you again.
+      <br>
+      <b>Save on the server</b> is the advanced choice: encrypted with AES-256-GCM, bound to
+      your account, shown back only as <code>sk-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;62a6</code>. Saving
+      sends one 1-token test request to verify it, which costs the provider&rsquo;s minimum
       charge (about 2&nbsp;&#8363;) on your key.
     </p>
   </div>
@@ -393,10 +426,13 @@ window.Auth = (() => {
     box.hidden = !message;
   }
 
-  function busy(scope, on, label) {
-    const btn = scope.querySelector('[data-submit-label]');
+  // `target` is the button that was pressed, when a form has more than one. The
+  // other button keeps its own label so a wait does not look like it belongs to
+  // the choice you did not make.
+  function busy(scope, on, label, target) {
     const form = scope.closest('form') || scope;
-    const submit = form.querySelector('.ov-submit');
+    const btn = (target || form).querySelector('[data-submit-label]');
+    const submit = target || form.querySelector('.ov-submit');
     if (btn) btn.textContent = on ? 'Working…' : label;
     if (submit) submit.disabled = on;
     for (const input of form.querySelectorAll('input')) input.disabled = on;
@@ -447,6 +483,9 @@ window.Auth = (() => {
         return;
       }
       form.password.value = '';
+      // A new session in this tab gets a new key. Leaving the old one attached
+      // would spend somebody else's credit against the account you just opened.
+      clearSessionKey();
       state.user = res.data.user;
       state.apiError = '';
       state.disabled = false;
@@ -465,16 +504,37 @@ window.Auth = (() => {
       if (!apiKey) return setError(form, 'Paste your key first.');
       if (!/^sk-/.test(apiKey)) return setError(form, 'Provider keys start with "sk-".');
 
-      busy(form, true, 'Save key');
+      // Enter presses the first button, and the first button is the one that keeps
+      // the key in this tab. Saving to the server always takes a deliberate click.
+      const pressed = event.submitter || form.querySelector('[data-mode="session"]');
+      const save = pressed.dataset.mode === 'save';
+
+      if (!save) {
+        if (!setSessionKey(apiKey)) {
+          return setError(form, 'That key is too short, or has a character a provider key does not use.');
+        }
+        form.apiKey.value = '';
+        hide();
+        emit();
+        const done = afterAuth;
+        afterAuth = null;
+        if (done) done(state.user, { sessionKey: true });
+        return;
+      }
+
+      busy(form, true, 'Save it on the server', pressed);
       setError(form, '');
       const res = await api('/api/key', { method: 'POST', body: { apiKey } });
-      busy(form, false, 'Save key');
+      busy(form, false, 'Save it on the server', pressed);
 
       if (!res.ok) {
         setError(form, res.data.error || `Could not save that key (${res.status})`);
         return;
       }
       form.apiKey.value = '';
+      // Saving replaces whatever this tab was holding: two keys, one silent about
+      // which paid, is worse than one.
+      clearSessionKey();
       state.user = res.data.user;
       if (res.data.warning) console.warn('[key]', res.data.warning);
       hide();
@@ -554,6 +614,7 @@ window.Auth = (() => {
   async function signOut() {
     await api('/api/auth/logout', { method: 'POST' });
     writeToken('');
+    clearSessionKey();
     state.user = null;
     state.disabled = false;
     hide();
@@ -628,6 +689,8 @@ window.Auth = (() => {
     showKeyGate,
     hide,
     signOut,
+    setSessionKey,
+    clearSessionKey,
     get user() {
       return state.user;
     },
@@ -635,7 +698,13 @@ window.Auth = (() => {
       return Boolean(state.user);
     },
     get hasKey() {
-      return Boolean(state.user?.hasKey);
+      return Boolean(sessionKey || state.user?.hasKey);
+    },
+    // Which of the two keys the page is holding. Nothing here reads the key back
+    // out — the value itself never leaves this module except in a request header.
+    get keyMode() {
+      if (sessionKey) return 'session';
+      return state.user?.hasKey ? 'vault' : 'none';
     },
     get isAdmin() {
       return state.user?.role === 'admin';

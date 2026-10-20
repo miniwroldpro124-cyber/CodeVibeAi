@@ -9,7 +9,6 @@
 <link rel="stylesheet" href="/styles.css?v=18">
 <script src="/theme.js"></script>
 <script src="/config.js"></script>
-<script src="/watchdog.js" data-mode="warn" defer></script>
 </head>
 <body>
 
@@ -54,10 +53,15 @@
           <input type="number" id="reqs" value="300" min="1" step="1" inputmode="numeric">
         </label>
         <label class="field">
-          <span>Markup <b id="markupVal">20</b>%</span>
-          <input type="range" id="markup" min="0" max="200" step="5" value="20">
+          <span>Simulated margin <b id="markupVal">0</b>%</span>
+          <input type="range" id="markup" min="0" max="200" step="5" value="0">
         </label>
       </div>
+      <p class="card-sub">
+        The provider's list price is what your key is charged, and it is the headline number below.
+        The margin is a what-if: this site takes nothing on a key you supplied, so moving that slider
+        changes no bill.
+      </p>
 
       <div class="result-grid" id="results"></div>
       <div class="callout" id="note" hidden></div>
@@ -66,9 +70,9 @@
     <section class="card">
       <h2>Price list</h2>
       <p class="card-sub">
-        Live from the provider — dong per <b>1M tokens</b>. The “billed” column adds the current
-        markup of <b id="listMarkup">20</b>%, which is what DevChat shows for reference; your key is
-        charged the list price by the provider.
+        Live from the provider — dong per <b>1M tokens</b>. The last price column is the list rate with
+        the simulated margin above it, shown as arithmetic only: your key is charged the list price by
+        the provider.
       </p>
       <div class="filter-bar">
         <input type="search" id="q" placeholder="Filter models (claude, gpt, deepseek…)" autocomplete="off" spellcheck="false">
@@ -83,7 +87,7 @@
               <th class="num">In / 1M</th>
               <th class="num">Cache read / 1M</th>
               <th class="num">Out / 1M</th>
-              <th class="num">Billed out / 1M</th>
+              <th class="num">Out + margin / 1M</th>
               <th class="num">Min / request</th>
             </tr>
           </thead>

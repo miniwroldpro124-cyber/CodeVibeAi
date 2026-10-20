@@ -96,8 +96,16 @@ function serveStatic(req, res, pathname) {
 }
 
 const server = createServer((req, res) => {
-  applySecurityHeaders(res);
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  // A request line this parser cannot read must not reach the route table. It also
+  // has to be answered here rather than left to throw: an exception escaping the
+  // request listener takes the whole process down with it.
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return sendText(res, 400, 'Bad request');
+  }
+  applySecurityHeaders(res, url.pathname);
 
   handleApi(req, res, url)
     .then((handled) => {

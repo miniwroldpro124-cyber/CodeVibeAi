@@ -301,7 +301,6 @@ openai_base_url = "{V1}"`],
     base: 'https://api.xah.io/v1',
     model: SUGGESTED[0],
     prices: new Map(),
-    markupPercent: 0,
     catalogue: false,
     tool: TOOLS[0].id
   };
@@ -399,12 +398,10 @@ openai_base_url = "{V1}"`],
         : 'Sign in and this line shows the provider’s list price for the model you picked.';
       return;
     }
-    const rate = 1 + state.markupPercent / 100;
     const bits = [];
     bits.push(price.input ? `in ${vnd(price.input)} / 1M` : 'no input price published');
     bits.push(price.output ? `out ${vnd(price.output)} / 1M` : 'no output price published');
     if (price.perRequest) bits.push(`${vnd(price.perRequest)} per request`);
-    if (price.output) bits.push(`out with the ${state.markupPercent}% markup: ${vnd(price.output * rate)} / 1M`);
     if (price.endpoints.length) bits.push(price.endpoints.join(' · '));
     els.modelPrice.textContent = bits.join('  ·  ');
   }
@@ -560,7 +557,6 @@ openai_base_url = "{V1}"`],
   async function loadPrices() {
     const res = await window.Auth.api('/api/pricing');
     if (!res.ok) return;
-    state.markupPercent = Number(res.data.markupPercent) || 0;
     for (const model of res.data.models || []) {
       state.prices.set(model.id, {
         input: model.input,

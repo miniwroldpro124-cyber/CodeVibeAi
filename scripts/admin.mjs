@@ -24,7 +24,7 @@ const { hostedConfigured, loadEnv } = await lib('env.js');
 loadEnv(ROOT);
 
 const { Store, DB_FILE } = await lib('db.js');
-const { hashPassword, MASTER_KEY_FILE } = await lib('auth.js');
+const { hashPassword, MASTER_KEY_FILE, encryptApiKey, decryptApiKey, currentKeyLabel, readableKeyLabels, keyContext, maskKey } = await lib('auth.js');
 const guard = await lib('guard.js');
 const { GUARD_POLICY } = guard;
 
@@ -40,6 +40,7 @@ const HELP = `
   npm run admin -- --status <name> active|disabled
   npm run admin -- --markup <percent>    set the markup used by reports and the calculator
   npm run admin -- --print-master-key    show MASTER_KEY, needed before moving to a host with no disk
+  npm run admin -- --rotate-master       what would be re-sealed under a new MASTER_KEY (--apply to do it)
 
   Options: --write-env (store the new admin password in .env), --json, --help
 `;
@@ -48,7 +49,7 @@ const args = process.argv.slice(2);
 
 // Boolean switches are removed from the word list; everything else keeps its
 // dashes, so a password that happens to start with "--" is still a word.
-const BOOLEAN_FLAGS = new Set(['--json', '--write-env', '--create']);
+const BOOLEAN_FLAGS = new Set(['--json', '--write-env', '--create', '--apply', '--dry-run']);
 const flags = new Set(args.filter((a) => BOOLEAN_FLAGS.has(a)));
 const words = args.filter((a) => !BOOLEAN_FLAGS.has(a));
 
@@ -88,6 +89,9 @@ try {
       break;
     case 'print-master-key':
       printMasterKey();
+      break;
+    case 'rotate-master':
+      await rotateMaster();
       break;
     default:
       fail(`Unknown command "${cmd}".${HELP}`);
@@ -151,6 +155,95 @@ function printMasterKey() {
   console.log('');
   console.log('  Put that value in the Vercel project environment (Settings → Environment Variables)');
   console.log('  and in .env on any other host, then restart. It must match exactly.');
+  console.log('');
+}
+
+// Which master key a stored blob was sealed with, as printed inside the blob.
+// "legacy" is the pre-versioning format, which carries no label at all.
+function sealLabel(blob) {
+  const parts = String(blob || '').split('.');
+  if (parts[0] === 'v2' && parts.length === 5) return parts[1];
+  if (parts[0] === 'v1' && parts.length === 4) return 'legacy';
+  return 'unknown';
+}
+
+// Re-seals every stored sk- under the MASTER_KEY this process is using now.
+//
+// This is what makes a published master key revocable without asking every user
+// to paste their key again: the previous value stays readable through
+// MASTER_KEY_PREV only for the length of this pass, and once every row reports
+// the new label the old key can be deleted for good.
+//
+// A dry run by default, because it rewrites the vault of every account. A row
+// that cannot be decrypted is reported and left exactly as it is — this command
+// never destroys a blob it could not read.
+async function rotateMaster() {
+  const apply = flags.has('--apply');
+  const target = currentKeyLabel();
+  const readable = readableKeyLabels();
+  const rows = await store.listSealedKeys();
+
+  console.log('');
+  console.log(`  Vault key in use now : ${target}`);
+  console.log(`  Keys readable        : ${readable.join(', ')}${readable.length > 1 ? ' (includes MASTER_KEY_PREV)' : ''}`);
+  console.log(`  Accounts with a key  : ${rows.length}`);
+  if (!readable.includes(target)) console.log('  !! The current key cannot read its own label. Check MASTER_KEY.');
+
+  const counts = { current: 0, rewrite: 0, unreadable: 0, failed: 0 };
+  const lines = [];
+  for (const row of rows) {
+    const label = sealLabel(row.sealed);
+    if (label === target) {
+      counts.current += 1;
+      lines.push(`    ${String(row.id).padStart(3)}  ${row.username.padEnd(20)}  ${row.hint || ''}  ${label}  already current`);
+      continue;
+    }
+    let plain = null;
+    try {
+      plain = decryptApiKey(row.sealed, keyContext(row.id));
+    } catch {
+      counts.unreadable += 1;
+      lines.push(`    ${String(row.id).padStart(3)}  ${row.username.padEnd(20)}  ${row.hint || ''}  ${label}  NOT READABLE here`);
+      continue;
+    }
+    if (!apply) {
+      counts.rewrite += 1;
+      lines.push(`    ${String(row.id).padStart(3)}  ${row.username.padEnd(20)}  ${row.hint || ''}  ${label}  would be re-sealed`);
+      continue;
+    }
+    try {
+      await store.setUserApiKey(row.id, encryptApiKey(plain, keyContext(row.id)), row.hint || maskKey(plain));
+      counts.rewrite += 1;
+      lines.push(`    ${String(row.id).padStart(3)}  ${row.username.padEnd(20)}  ${row.hint || ''}  ${label} → ${target}  re-sealed`);
+    } catch {
+      counts.failed += 1;
+      lines.push(`    ${String(row.id).padStart(3)}  ${row.username.padEnd(20)}  ${row.hint || ''}  ${label}  WRITE FAILED, left as it was`);
+    }
+    plain = null;
+  }
+
+  for (const line of lines) console.log(line);
+  console.log('');
+  console.log(`  Already current: ${counts.current}   ${apply ? 're-sealed' : 'to re-seal'}: ${counts.rewrite}   unreadable: ${counts.unreadable}   write failures: ${counts.failed}`);
+
+  if (counts.unreadable) {
+    console.log('');
+    console.log('  Some rows were sealed with a key this process cannot read. They were left');
+    console.log('  untouched. Put that value in MASTER_KEY_PREV and run this again, or those');
+    console.log('  accounts will have to paste their key again.');
+    process.exitCode = 1;
+  } else if (!apply) {
+    console.log('');
+    console.log('  Nothing was changed. Run it again with --apply to write the new seals.');
+    console.log('    npm run admin -- --rotate-master --apply');
+  } else if (counts.rewrite) {
+    console.log('');
+    console.log('  Every readable row is now under the current key. Remove MASTER_KEY_PREV from');
+    console.log('  the environment and restart, so the old key stops being usable anywhere.');
+  } else {
+    console.log('');
+    console.log('  Nothing to do: every stored key already uses the current master key.');
+  }
   console.log('');
 }
 
@@ -257,7 +350,7 @@ async function reset() {
   if (provided && problem) fail(`Refusing that password: ${problem}`);
 
   const password = provided || guard.randomAdminPassword(user.username);
-  const { passHash, passSalt } = hashPassword(password);
+  const { passHash, passSalt } = await hashPassword(password);
   await store.setUserPassword(user.id, passHash, passSalt);
   await guard.unlockAccount(store, user.username);
   await store.logAuthEvent({
@@ -286,7 +379,7 @@ async function promote() {
     const password = extra || guard.randomAdminPassword(name);
     const problem = guard.passwordProblem({ role: 'admin', username: name, password });
     if (problem) fail(`Refusing that password: ${problem}`);
-    const { passHash, passSalt } = hashPassword(password);
+    const { passHash, passSalt } = await hashPassword(password);
     await store.createUser({ username: name, passHash, passSalt, role: 'admin' });
     await store.logAuthEvent({ username: name, kind: 'admin_role', ip: null, detail: 'created as admin by CLI' });
     console.log(`\n  Created "${name}" as administrator.`);

@@ -25,7 +25,9 @@
 
   const state = {
     days: 30,
-    markupPercent: 20,
+    // Replaced by the server's number on the first load. An assumed margin here
+    // would draw a resale column on the overview before the real rate is known.
+    markupPercent: 0,
     users: [],
     userQuery: '',
     me: null,
@@ -73,15 +75,19 @@
     const failed = Number(t.failed) || 0;
     const margin = billed - actual;
     const avg = requests ? actual / requests : 0;
+    const markup = Number(data.markupPercent) || 0;
 
+    // The provider charge comes first: on a bring-your-own-key request it is the
+    // only money that actually moves. billed_cost is the what-if resale column
+    // built from the simulated margin, so it is labelled as one.
     els.stats.innerHTML = [
-      stat(vnd(billed), `Billed (+${data.markupPercent}%)`, true),
-      stat(vnd(actual), 'Actual provider cost'),
-      stat(vnd(margin), 'Markup margin'),
+      stat(vnd(actual), "Charged to users' keys", true),
+      stat(vnd(avg), 'Avg / request'),
+      stat(vnd(billed), `Simulated resale (+${markup}%)`),
+      stat(vnd(margin), 'Margin if resold, not collected'),
       stat(int(requests), 'Requests'),
       stat(int(tokens), 'Tokens'),
       stat(int(data.userCount), `Users · ${int(data.adminCount)} admin`),
-      stat(vnd(avg), 'Avg / request'),
       stat(failed ? int(failed) : '0', 'Failed', Boolean(failed))
     ].join('');
   }
@@ -93,12 +99,12 @@
       els.sparkLabels.innerHTML = '<span>No requests in this range yet.</span><span></span>';
       return;
     }
-    const max = Math.max(...days.map((d) => Number(d.billed_cost) || 0), 0.0001);
+    const max = Math.max(...days.map((d) => Number(d.actual_cost) || 0), 0.0001);
     // The height goes on through the CSSOM rather than a style="…" attribute:
     // the page ships a Content-Security-Policy that rejects inline styles.
     els.spark.innerHTML = days.map((d) => {
-      const pct = Math.max(2, Math.round(((Number(d.billed_cost) || 0) / max) * 100));
-      return `<i data-h="${pct}" title="${esc(d.day)} — ${int(d.requests)} req, ${esc(vnd(d.billed_cost))}"></i>`;
+      const pct = Math.max(2, Math.round(((Number(d.actual_cost) || 0) / max) * 100));
+      return `<i data-h="${pct}" title="${esc(d.day)} — ${int(d.requests)} req, ${esc(vnd(d.actual_cost))} charged"></i>`;
     }).join('');
     for (const bar of els.spark.children) bar.style.height = `${bar.dataset.h}%`;
     els.sparkLabels.innerHTML = `<span>${esc(days[0].day)}</span><span>${esc(days[days.length - 1].day)}</span>`;
@@ -183,7 +189,7 @@
         <td class="mono">${esc(u.username)}${self ? ' <span class="pill dim">you</span>' : ''}</td>
         <td>${admin ? '<span class="pill ok">admin</span>' : '<span class="pill dim">user</span>'}</td>
         <td>${active ? '<span class="pill ok">active</span>' : '<span class="pill off">disabled</span>'}</td>
-        <td class="mono" data-guard="secret">${u.api_key_hint ? esc(u.api_key_hint) : '<span class="pill dim">none</span>'}</td>
+        <td class="mono">${u.api_key_hint ? esc(u.api_key_hint) : '<span class="pill dim">none</span>'}</td>
         <td class="num">${int(u.requests)}</td>
         <td class="num">${int(tokens)}</td>
         <td class="num">${esc(vnd(u.actual_cost))}</td>
@@ -248,16 +254,18 @@
   async function saveMarkup() {
     const value = Number(els.markupNum.value);
     if (!Number.isFinite(value) || value < 0 || value > 1000) {
-      return say('Markup must be between 0 and 1000 percent.', false);
+      return say('A simulated margin must be between 0 and 1000 percent.', false);
     }
-    const res = await post('/api/admin/settings', { markupPercent: value }, 'change the markup');
+    const res = await post('/api/admin/settings', { markupPercent: value }, 'change the simulated margin');
     if (res.cancelled) return;
     if (!res.ok) {
       if (Auth.guard(res)) say(esc(res.data.error || 'Could not save'), false);
       return;
     }
     setMarkup(Number(res.data.markupPercent));
-    say(`Markup is now <b>+${esc(res.data.markupPercent)}%</b>. Every cost shown on this site updates immediately.`);
+    say(res.data.markupPercent > 0
+      ? `Simulated margin is now <b>${esc(res.data.markupPercent)}%</b>. It fills the resale column here and the “Out + margin” column on the price list — no user is charged it and no spending limit counts it.`
+      : `Simulated margin is back to <b>0%</b>, so every figure on the site is the provider’s own list price.`);
     loadOverview();
     loadSecurity();
   }
