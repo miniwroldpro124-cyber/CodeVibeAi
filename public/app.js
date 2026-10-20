@@ -357,7 +357,25 @@
     if (node.tagName === 'A' && node.getAttribute('href')) {
       node.setAttribute('target', '_blank');
       node.setAttribute('rel', 'noopener noreferrer');
+      return;
     }
+    // An answer can contain a remote image URL whose query string is a carrier
+    // for conversation data. Keep the path visible as a link, but never let the
+    // browser fetch the image just because the model emitted markdown.
+    if (node.tagName !== 'IMG') return;
+    const src = node.getAttribute('src') || '';
+    if (src.startsWith('/')) return;
+    if (src.startsWith('data:image/')) return;
+    if (!/^https:\/\//i.test(src)) {
+      node.remove();
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = src;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer nofollow';
+    link.textContent = `[external image: ${node.getAttribute('alt') || 'open link'}]`;
+    node.replaceWith(link);
   });
 
   function renderMarkdown(target, text) {
